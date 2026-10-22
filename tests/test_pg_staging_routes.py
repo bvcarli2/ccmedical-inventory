@@ -68,6 +68,7 @@ class PostgreSQLStagingRoutesTest(unittest.TestCase):
             })
         self.assertEqual(response.status_code,201)
         self.assertEqual(response.json["received"],1)
+        self.assertIn("INSERT INTO activity_log",str(fake.execute.call_args_list))
         batch.assert_called_once_with(fake,1)
         allocate.assert_called_once_with(fake,"CC")
         receive.assert_called_once()
