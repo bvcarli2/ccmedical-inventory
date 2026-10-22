@@ -113,5 +113,22 @@ class PostgreSQLStagingRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code,400)
         self.assertEqual(response.data.decode(),"Invalid repair stage")
 
+class StagingSecurityDefaultsTest(unittest.TestCase):
+    def test_payload_limit_and_security_headers(self):
+        from staging_security_defaults import configure_staging_limits, apply_staging_headers
+        app = Flask(__name__)
+        configure_staging_limits(app)
+        app.after_request(apply_staging_headers)
+        app.add_url_rule("/upload",view_func=lambda: "ok",methods=["POST"])
+        with app.test_client() as client:
+            ok = client.post("/upload",data="small")
+            self.assertEqual(ok.status_code,200)
+            self.assertEqual(ok.headers["X-Frame-Options"],"DENY")
+            self.assertEqual(ok.headers["X-Content-Type-Options"],"nosniff")
+            self.assertIn("geolocation=()",ok.headers["Permissions-Policy"])
+            too_large = client.post("/upload",data=b"x"*(10*1024*1024+1),
+                                    content_type="application/octet-stream")
+            self.assertEqual(too_large.status_code,413)
+
 if __name__ == "__main__":
     unittest.main()
