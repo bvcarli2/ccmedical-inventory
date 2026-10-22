@@ -10,6 +10,7 @@ from pathlib import Path
 from flask import abort, g, request, send_file
 import psycopg
 from psycopg.rows import dict_row
+from postgres_activity_log import audit
 
 MAX_FILE = 5 * 1024 * 1024
 TYPES = {"image/jpeg": (".jpg", (bytes.fromhex("ffd8ff"),)),
@@ -64,6 +65,7 @@ def register_attachment_routes(app, database_url):
                     (rid, target.name, original, mime, len(data),
                      hashlib.sha256(data).hexdigest(), g.employee_id),
                 ).fetchone()
+                audit(db,"attachment_uploaded","customer_repair",rid,str(result["id"]))
             return {"attachment_id": result["id"], "name": original}, 201
         except Exception:
             target.unlink(missing_ok=True)
