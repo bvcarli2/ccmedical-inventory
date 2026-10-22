@@ -8,3 +8,10 @@ CREATE TABLE IF NOT EXISTS employee_users (
  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE UNIQUE INDEX IF NOT EXISTS employee_users_email_ci ON employee_users (LOWER(email));
+
+CREATE TABLE IF NOT EXISTS employee_login_attempts (
+ email TEXT PRIMARY KEY,
+ failures INTEGER NOT NULL DEFAULT 0,
+ last_failure TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ blocked_until TIMESTAMPTZ
+);
