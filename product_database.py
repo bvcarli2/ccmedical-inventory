@@ -2,6 +2,10 @@ import os
 import hmac
 import re
 import sqlite3
+try:
+ import psycopg
+except ImportError:
+ psycopg=None
 from pathlib import Path
 from flask import request,render_template_string,redirect,url_for,flash,session
 from openpyxl import load_workbook
@@ -21,15 +25,15 @@ def render(body,**kwargs):
 def clean(x):return str(x or '').strip()
 def key(x):return re.sub(r'\s+',' ',clean(x)).upper()
 def admin():return session.get('product_admin') is True
-def register_product_routes(app,conn,base):
+def register_product_routes(app,conn,base,postgres=False):
  def setup(c):
-  c.executescript(SCHEMA)
-  for code,label in [('SYS','Ultrasound Systems'),('PRB','Ultrasound Probes'),('PTS','Parts / Accessories')]:c.execute('INSERT OR IGNORE INTO product_categories(code,label) VALUES (?,?)',(code,label))
-  for name in ['GE','Philips','Siemens','Canon/Toshiba','Samsung','Mindray','Fujifilm/SonoSite']:c.execute('INSERT OR IGNORE INTO product_manufacturers(name) VALUES (?)',(name,))
+  if not postgres:c.executescript(SCHEMA)
+  for code,label in [('SYS','Ultrasound Systems'),('PRB','Ultrasound Probes'),('PTS','Parts / Accessories')]:c.execute(('INSERT INTO product_categories(code,label) VALUES (?,?) ON CONFLICT DO NOTHING' if postgres else 'INSERT OR IGNORE INTO product_categories(code,label) VALUES (?,?)'),(code,label))
+  for name in ['GE','Philips','Siemens','Canon/Toshiba','Samsung','Mindray','Fujifilm/SonoSite']:c.execute(('INSERT INTO product_manufacturers(name) VALUES (?) ON CONFLICT DO NOTHING' if postgres else 'INSERT OR IGNORE INTO product_manufacturers(name) VALUES (?)'),(name,))
   c.commit()
  def audit(c,pid,action,old,new):c.execute('INSERT INTO product_audit(product_id,action,old_value,new_value,actor) VALUES (?,?,?,?,?)',(pid,action,old,new,'Temporary Admin' if admin() else 'Unidentified employee'))
  def seed(c):
-  if c.execute('SELECT COUNT(*) FROM products').fetchone()[0]:return
+  if (c.execute('SELECT COUNT(*) AS total FROM products').fetchone()['total'] if postgres else c.execute('SELECT COUNT(*) FROM products').fetchone()[0]):return
   path=base/'CC_Medical_Product_Master_Research.xlsx'
   if not path.exists():return
   w=load_workbook(path,read_only=True,data_only=True);s=w['Master Product Preview']
@@ -37,14 +41,15 @@ def register_product_routes(app,conn,base):
    pid,cat,mfg,model,display,parts,short,descurl,confidence,notes,status,*tail=(list(r)+[None]*15)[:15]
    if not model:continue
    tech=tail[0] if len(tail)>0 else None;specurl=tail[1] if len(tail)>1 else None
-   c.execute('INSERT OR IGNORE INTO products(category,manufacturer,model,display_name,short_description,technical_specs,description_source,spec_source,review_notes,review_status) VALUES (?,?,?,?,?,?,?,?,?,?)',(cat or 'PTS',mfg,model,display or model,short,tech,descurl,specurl,notes,'Pending Review' if status!='Approved' else 'Approved'))
+   c.execute(('INSERT INTO products(category,manufacturer,model,display_name,short_description,technical_specs,description_source,spec_source,review_notes,review_status) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING' if postgres else 'INSERT OR IGNORE INTO products(category,manufacturer,model,display_name,short_description,technical_specs,description_source,spec_source,review_notes,review_status) VALUES (?,?,?,?,?,?,?,?,?,?)'),(cat or 'PTS',mfg,model,display or model,short,tech,descurl,specurl,notes,'Pending Review' if status!='Approved' else 'Approved'))
   c.commit()
  @app.route('/products')
  def products():
   c=conn();setup(c);seed(c);q=clean(request.args.get('q'));category=clean(request.args.get('category'));where=['1=1'];args=[]
   if q:where.append('''(p.display_name LIKE ? OR p.model LIKE ? OR p.manufacturer LIKE ? OR EXISTS(SELECT 1 FROM product_part_numbers pn WHERE pn.product_id=p.id AND pn.part_number LIKE ?))''');args+=['%'+q+'%']*4
   if category:where.append('p.category=?');args.append(category)
-  rows=c.execute('SELECT p.*,(SELECT GROUP_CONCAT(part_number,", ") FROM product_part_numbers WHERE product_id=p.id AND active=1) parts FROM products p WHERE '+' AND '.join(where)+' ORDER BY p.display_name LIMIT 1000',args).fetchall();c.close()
+  aggregate = "STRING_AGG(part_number, ', ')" if postgres else 'GROUP_CONCAT(part_number,", ")'
+  rows=c.execute('SELECT p.*,(SELECT '+aggregate+' FROM product_part_numbers WHERE product_id=p.id AND active=1) parts FROM products p WHERE '+' AND '.join(where)+' ORDER BY p.display_name LIMIT 1000',args).fetchall();c.close()
   return render('''<h1>Product Database</h1><p class="muted">Master products only · No serial numbers, inventory costs or locations. Research is verified per source; unverified OEM part numbers remain blank.</p><section><form class="row"><input name="q" value="{{q}}" placeholder="Search manufacturer, model or OEM part number" style="min-width:320px"><select name="category"><option value="">All categories</option>{% for v in ['SYS','PRB','PTS'] %}<option value="{{v}}" {% if v==category %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button>Search</button><a class="btn" href="/products/request">Request Product</a></form></section><section><h3>{{rows|length}} products shown</h3><div style="overflow:auto"><table><tr><th>Category</th><th>Manufacturer</th><th>Product</th><th>OEM Part Numbers</th><th>Review</th></tr>{% for p in rows %}<tr><td>{{p.category}}</td><td>{{p.manufacturer or 'Needs review'}}</td><td><a href="/products/{{p.id}}">{{p.display_name}}</a></td><td>{{p.parts or 'Not verified'}}</td><td>{{p.review_status}}</td></tr>{% endfor %}</table></div></section>''',rows=rows,q=q,category=category)
  @app.route('/products/<int:pid>')
  def detail(pid):
@@ -65,7 +70,7 @@ def register_product_routes(app,conn,base):
   try:
    c.execute('INSERT INTO product_part_numbers(product_id,part_number,source_url,verification,active) VALUES (?,?,?,?,1)',(pid,number,source,verification))
    audit(c,pid,'OEM part number added','',str({'part_number':number,'source_url':source,'verification':verification,'active':1}));c.commit()
-  except sqlite3.IntegrityError:c.rollback();c.close();return 'This part number already exists on this product. Edit or reactivate it below.',400
+  except (sqlite3.IntegrityError, psycopg.IntegrityError if psycopg else sqlite3.IntegrityError):c.rollback();c.close();return 'This part number already exists on this product. Edit or reactivate it below.',400
   c.close();flash('OEM part number added');return redirect('/products/'+str(pid))
  @app.post('/products/<int:pid>/parts/<int:part_id>/edit')
  def edit_oem_part(pid,part_id):
@@ -83,13 +88,13 @@ def register_product_routes(app,conn,base):
    if before!=after:
     c.execute('UPDATE product_part_numbers SET part_number=?,source_url=?,verification=?,active=? WHERE id=? AND product_id=?',(number,source,verification,int(active),part_id,pid))
     audit(c,pid,'OEM part number edited',str(before),str(after));c.commit()
-  except sqlite3.IntegrityError:c.rollback();c.close();return 'This part number already exists on this product',400
+  except (sqlite3.IntegrityError, psycopg.IntegrityError if psycopg else sqlite3.IntegrityError):c.rollback();c.close();return 'This part number already exists on this product',400
   c.close();flash('OEM part number saved');return redirect('/products/'+str(pid))
  @app.post('/products/<int:pid>/compatibility')
  def compatibility(pid):
   c=conn();setup(c);probe=c.execute('SELECT category FROM products WHERE id=?',(pid,)).fetchone();sid=request.form.get('system_id',type=int);system=c.execute('SELECT category FROM products WHERE id=?',(sid,)).fetchone() if sid else None
   if not probe or probe['category']!='PRB' or not system or system['category']!='SYS':c.close();return 'Select a probe and system',400
-  c.execute('INSERT OR IGNORE INTO product_compatibility(probe_id,system_id,source_url) VALUES (?,?,?)',(pid,sid,clean(request.form.get('source_url'))));audit(c,pid,'Compatibility added','',str(sid));c.commit();c.close();return redirect('/products/'+str(pid))
+  c.execute(('INSERT INTO product_compatibility(probe_id,system_id,source_url) VALUES (?,?,?) ON CONFLICT DO NOTHING' if postgres else 'INSERT OR IGNORE INTO product_compatibility(probe_id,system_id,source_url) VALUES (?,?,?)'),(pid,sid,clean(request.form.get('source_url'))));audit(c,pid,'Compatibility added','',str(sid));c.commit();c.close();return redirect('/products/'+str(pid))
  @app.route('/products/request',methods=['GET','POST'])
  def request_product():
   if request.method=='POST':
@@ -111,20 +116,20 @@ def register_product_routes(app,conn,base):
  @app.post('/products/admin/request/<int:rid>')
  def approve_request(rid):
   if not admin():return 'Admin access required',403
-  c=conn();setup(c);r=c.execute('SELECT * FROM product_requests WHERE id=? AND status="Pending"',(rid,)).fetchone()
+  c=conn();setup(c);r=c.execute('SELECT * FROM product_requests WHERE id=? AND status=\'Pending\'',(rid,)).fetchone()
   if not r:c.close();return 'Request not found',404
   action=request.form.get('action')
   if action=='approve':
    if r['request_type']=='Part Number':
     pid=request.form.get('product_id',type=int);p=c.execute('SELECT id FROM products WHERE id=?',(pid,)).fetchone() if pid else None
     if not p or not r['part_number']:c.close();return 'Select valid existing product ID and part number',400
-    c.execute('INSERT OR IGNORE INTO product_part_numbers(product_id,part_number,source_url,verification) VALUES (?,?,?,?)',(pid,key(r['part_number']),clean(request.form.get('source_url')),'Admin Approved - source review required'));audit(c,pid,'Part number approved','',r['part_number'])
+    c.execute(('INSERT INTO product_part_numbers(product_id,part_number,source_url,verification) VALUES (?,?,?,?) ON CONFLICT DO NOTHING' if postgres else 'INSERT OR IGNORE INTO product_part_numbers(product_id,part_number,source_url,verification) VALUES (?,?,?,?)'),(pid,key(r['part_number']),clean(request.form.get('source_url')),'Admin Approved - source review required'));audit(c,pid,'Part number approved','',r['part_number'])
    else:
     cat=r['category'] if r['category'] in ('SYS','PRB','PTS') else 'PTS';mfg=clean(r['manufacturer']);model=clean(r['model'])
     if not model:c.close();return 'Model required',400
-    existing=c.execute('SELECT id FROM products WHERE category=? AND COALESCE(manufacturer,"")=? AND model=?',(cat,mfg,model)).fetchone()
+    existing=c.execute('SELECT id FROM products WHERE category=? AND COALESCE(manufacturer,\'\')=? AND model=?',(cat,mfg,model)).fetchone()
     if existing:pid=existing['id']
-    else:pid=c.execute('INSERT INTO products(category,manufacturer,model,display_name,review_status) VALUES (?,?,?,?,?)',(cat,mfg,model,(mfg+' '+model).strip(),'Approved')).lastrowid
+    else:pid=(c.execute('INSERT INTO products(category,manufacturer,model,display_name,review_status) VALUES (?,?,?,?,?)',(cat,mfg,model,(mfg+' '+model).strip(),'Approved RETURNING id').fetchone()['id'] if postgres else c.execute('INSERT INTO products(category,manufacturer,model,display_name,review_status) VALUES (?,?,?,?,?)',(cat,mfg,model,(mfg+' '+model).strip(),'Approved')).lastrowid)
     audit(c,pid,'Request approved','',model)
   c.execute('UPDATE product_requests SET status=? WHERE id=?',('Approved' if action=='approve' else 'Rejected',rid));c.commit();c.close();flash('Request processed');return redirect('/products/admin')
  @app.post('/products/<int:pid>/edit')
@@ -136,7 +141,7 @@ def register_product_routes(app,conn,base):
   if cat not in ('SYS','PRB','PTS'):c.close();return 'Invalid category',400
   fields=['category','manufacturer','model','display_name','short_description','technical_specs','description_source','spec_source','review_status','active'];new=[clean(f.get(x)) for x in fields];new[-1]=1 if new[-1]=='1' else 0
   try:c.execute('UPDATE products SET '+','.join(x+'=?' for x in fields)+' WHERE id=?',new+[pid]);audit(c,pid,'Product edited',str(dict(old)),str(dict(zip(fields,new))));c.commit()
-  except sqlite3.IntegrityError:c.rollback();c.close();return 'Duplicate product exists',400
+  except (sqlite3.IntegrityError, psycopg.IntegrityError if psycopg else sqlite3.IntegrityError):c.rollback();c.close();return 'Duplicate product exists',400
   c.close();return redirect('/products/'+str(pid))
  @app.post('/products/admin/import/preview')
  def import_preview():
@@ -167,9 +172,9 @@ def register_product_routes(app,conn,base):
   if rows is None:return 'No preview in this session',400
   c=conn();setup(c);added=0
   for r in rows:
-   existing=c.execute('SELECT id FROM products WHERE category=? AND COALESCE(manufacturer,"")=? AND UPPER(model)=?',(r['category'],r['manufacturer'],key(r['model']))).fetchone()
+   existing=c.execute('SELECT id FROM products WHERE category=? AND COALESCE(manufacturer,\'\')=? AND UPPER(model)=?',(r['category'],r['manufacturer'],key(r['model']))).fetchone()
    if existing:continue
    try:
-    pid=c.execute('INSERT INTO products(category,manufacturer,model,display_name,short_description,technical_specs,description_source,spec_source,review_notes) VALUES (?,?,?,?,?,?,?,?,?)',(r['category'],r['manufacturer'],r['model'],r['display_name'],r['short_description'],r['technical_specs'],r['description_source'],r['spec_source'],r['review_notes'])).lastrowid;audit(c,pid,'Excel import','',r['display_name']);added+=1
-   except sqlite3.IntegrityError:pass
+    pid=(c.execute('INSERT INTO products(category,manufacturer,model,display_name,short_description,technical_specs,description_source,spec_source,review_notes) VALUES (?,?,?,?,?,?,?,?,?)',(r['category'],r['manufacturer'],r['model'],r['display_name'],r['short_description'],r['technical_specs'],r['description_source'],r['spec_source'],r['review_notes'])).lastrowi RETURNING id).fetchone()['id'] if postgres else c.execute('INSERT INTO products(category,manufacturer,model,display_name,short_description,technical_specs,description_source,spec_source,review_notes) VALUES (?,?,?,?,?,?,?,?,?)',(r['category'],r['manufacturer'],r['model'],r['display_name'],r['short_description'],r['technical_specs'],r['description_source'],r['spec_source'],r['review_notes'])).lastrowid);audit(c,pid,'Excel import','',r['display_name']);added+=1
+   except (sqlite3.IntegrityError, psycopg.IntegrityError if psycopg else sqlite3.IntegrityError):pass
   c.execute('INSERT INTO product_imports(filename,added,skipped) VALUES (?,?,?)',('Admin uploaded XLSX',added,len(rows)-added));c.commit();c.close();flash(f'Imported {added} new products; skipped {len(rows)-added} existing/duplicate products');return redirect('/products')
