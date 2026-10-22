@@ -299,6 +299,8 @@ class RealPostgresTests(unittest.TestCase):
      response=client.post("/login",data={"_csrf_token":token,"email":"attachment-worker@example.test","password":"long-synthetic-password"})
      self.assertEqual(response.status_code,302)
      with client.session_transaction() as sess:
+      self.assertIsInstance(sess["last_seen"],int)
+     with client.session_transaction() as sess:
       token=sess["_csrf_token"]
      endpoint="/repairs/"+str(rid)+"/attachments"
      self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO(b"<svg/>"),"bad.png"),"_csrf_token":token}).status_code,400)
