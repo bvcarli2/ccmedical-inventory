@@ -18,6 +18,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 LOGIN = """<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>CC Medical Login</title></head><body><h1>CC Medical Employee Login</h1>{% if error %}<p role="alert">{{error}}</p>{% endif %}<form method="post"><input type="hidden" name="_csrf_token" value="{{token}}"><label>Email <input type="email" name="email" required></label><label>Password <input type="password" name="password" required></label><button>Sign in</button></form></body></html>"""
 WRITE_ROLES = {
  "inventory_new": {"admin","employee"},
+ "attachment_upload": {"admin","employee"},
  "transfer": {"admin","employee"},
  "repair": {"admin","employee"},
  "repair_update": {"admin","employee"},
@@ -70,6 +71,7 @@ def register_pg_security(app, database_url):
             session.clear()
             return redirect(url_for("pg_employee_login"))
         g.employee_role=user["role"]
+        g.employee_id=user["id"]
         if request.path.startswith("/products/admin") and user["role"]!="admin":
             abort(403)
         if user["role"]!="admin":
