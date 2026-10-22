@@ -431,6 +431,62 @@ class RealPostgresTests(unittest.TestCase):
    self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,200)
    self.assertEqual(client.post("/unreviewed-write",data={"_csrf_token":token}).status_code,403)
 
+ def test_private_preview_authenticated_inventory_workflow(self):
+  """Synthetic receiving and transfer through employee-authenticated staging."""
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  from postgres_staging_routes import install_staging_routes
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+    VALUES (%s,%s,'employee') ON CONFLICT (LOWER(email)) DO UPDATE SET
+    password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+    ("preview-worker@example.test",generate_password_hash("synthetic-preview-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-private-preview-secret"
+  @site.get("/")
+  def index():
+   return "private preview"
+  @site.post("/inventory/new",endpoint="inventory_new")
+  def inventory_new():
+   return "sqlite fallback must not execute"
+  @site.post("/transfer/<int:uid>",endpoint="transfer")
+  def transfer(uid):
+   return "sqlite fallback must not execute"
+  install_staging_routes(site,lambda s:s.upper(),lambda s:("Active",s),float)
+  register_pg_security(site,URL)
+  from unittest.mock import patch
+  import postgres_staging_routes
+  with patch.object(postgres_staging_routes,"database_url",URL,create=True):
+   with site.test_client() as client:
+    self.assertEqual(client.get("/").status_code,302)
+    self.assertEqual(client.post("/inventory/new",data={}).status_code,302)
+    client.get("/login")
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    self.assertEqual(client.post("/login",data={"_csrf_token":token,
+      "email":"preview-worker@example.test","password":"synthetic-preview-password"}).status_code,302)
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    self.assertEqual(client.post("/inventory/new",data={"type[]":"CC","product[]":"Synthetic Preview Probe",
+      "manufacturer[]":"GE","serial[]":"PREVIEW-TEST-ONLY","location[]":"A1","cost[]":"25"}).status_code,403)
+    received=client.post("/inventory/new",data={"_csrf_token":token,"type[]":"CC",
+      "product[]":"Synthetic Preview Probe","manufacturer[]":"GE",
+      "serial[]":"PREVIEW-TEST-ONLY","location[]":"A1","cost[]":"25"})
+    self.assertEqual(received.status_code,201,received.data[:300])
+    code=received.json["inventory_codes"][0]
+    row=self.db.execute("SELECT id FROM units WHERE inventory_code=%s",(code,)).fetchone()
+    self.assertIsNotNone(row)
+    moved=client.post("/transfer/"+str(row["id"]),data={"_csrf_token":token,"location":"B2"})
+    self.assertEqual(moved.status_code,200,moved.data[:300])
+    events=self.db.execute("SELECT action,employee_id FROM activity_log WHERE entity_id IN (%s,%s)",
+      (code,str(row["id"]))).fetchall()
+    self.assertTrue(any(x["action"]=="receive" and x["employee_id"] is not None for x in events))
+    self.assertTrue(any(x["action"]=="transfer" and x["employee_id"] is not None for x in events))
+    self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
+    self.assertEqual(client.get("/").status_code,302)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
