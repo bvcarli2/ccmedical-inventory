@@ -107,6 +107,9 @@ def register_pg_security(app, database_url):
             password=request.form.get("password","")
             client_ip=request.remote_addr or "unknown"
             with db() as conn:
+                ip_attempt=conn.execute("SELECT blocked_until FROM employee_login_ip_attempts WHERE ip_address=%s",(client_ip,)).fetchone()
+                if ip_attempt and ip_attempt["blocked_until"] and ip_attempt["blocked_until"]>datetime.now(timezone.utc):
+                    return render_template_string(LOGIN,error="Too many attempts. Try again later.",token=session["_csrf_token"]),429
                 attempt=conn.execute("SELECT blocked_until FROM employee_login_attempts WHERE email=%s",(email,)).fetchone()
                 if attempt and attempt["blocked_until"]:
                     if attempt["blocked_until"]>datetime.now(timezone.utc):
