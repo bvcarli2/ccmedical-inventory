@@ -104,6 +104,8 @@ class RealPostgresTests(unittest.TestCase):
     self.assertEqual(admin.status_code,200,admin.data[:300])
     probe=self.db.execute("SELECT id FROM products WHERE model='L4-20'").fetchone()
     if probe:
+     # The Flask route uses a separate connection; commit fixture rows first.
+     self.db.commit()
      detail=client.get("/products/"+str(probe["id"]))
      self.assertEqual(detail.status_code,200,detail.data[:300])
   finally:
