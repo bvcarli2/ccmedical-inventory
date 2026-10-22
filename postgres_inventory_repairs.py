@@ -115,9 +115,9 @@ def update_repair_stage(db, rid, stage, allowed_stages, fields, note=""):
         """UPDATE customer_repairs SET customer=%s,manufacturer=%s,model=%s,
         part_number=%s,serial=%s,location=%s,technician=%s,notes=%s,stage=%s,
         stage_started_at=%s,completed_at=%s,updated_at=%s WHERE id=%s""",
-        (fields.get("customer") or old["customer"],fields.get("manufacturer",""),
-         fields.get("model",""),fields.get("part_number",""),fields.get("serial",""),
-         fields.get("location",""),fields.get("technician",""),fields.get("notes",""),
+        (fields.get("customer") or old["customer"],fields.get("manufacturer") or old["manufacturer"],
+         fields.get("model") or old["model"],fields.get("part_number") or old["part_number"],fields.get("serial") or old["serial"],
+         fields.get("location") or old["location"],fields.get("technician") or old["technician"],fields.get("notes") or old["notes"],
          stage,timestamp if changed else old["stage_started_at"],complete,timestamp,rid),
     )
     if changed:
