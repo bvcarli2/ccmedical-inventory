@@ -3,6 +3,7 @@
 Use only with disposable CI databases. Never run against a live Render database.
 """
 import os
+import hashlib
 import sys
 import psycopg
 from psycopg import sql
@@ -24,7 +25,14 @@ def snapshot(url):
             row = conn.execute(
                 sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
             ).fetchone()
-            results[table] = row[0]
+            digest = hashlib.sha256()
+            records = conn.execute(
+                sql.SQL("SELECT row_to_json(t)::text FROM {} AS t ORDER BY row_to_json(t)::text").format(sql.Identifier(table))
+            )
+            for record in records:
+                digest.update(record[0].encode("utf-8"))
+                digest.update(b"\\n")
+            results[table] = (row[0], digest.hexdigest())
         return results
 
 def main():
