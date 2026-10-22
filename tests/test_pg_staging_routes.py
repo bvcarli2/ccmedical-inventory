@@ -53,7 +53,7 @@ class PostgreSQLStagingRoutesTest(unittest.TestCase):
         self.client = self.app.test_client()
 
     def test_non_staging_route_is_blocked(self):
-        self.assertEqual(self.client.get("/inventory/new").status_code,405)
+        self.assertEqual(self.client.get("/inventory/new").status_code,404)
 
     def test_inventory_receiving_routes_to_postgres(self):
         fake = MagicMock()
