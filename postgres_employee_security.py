@@ -7,6 +7,8 @@ security review remain necessary.
 import os
 import secrets
 import hmac
+import re
+from markupsafe import escape
 from datetime import timedelta
 import psycopg
 from psycopg.rows import dict_row
@@ -100,6 +102,19 @@ def register_pg_security(app, database_url):
     @app.context_processor
     def csrf_context():
         return {"csrf_token":session.get("_csrf_token","")}
+
+    @app.after_request
+    def attach_csrf(response):
+        # Existing prototype templates lack hidden CSRF fields. Add them to
+        # ordinary POST forms without modifying the SQLite templates.
+        if response.mimetype=="text/html" and session.get("_csrf_token"):
+            html=response.get_data(as_text=True)
+            token=str(escape(session["_csrf_token"]))
+            html=re.sub(r'(<form\\b[^>]*\\bmethod\\s*=\\s*["\\\']?post["\\\']?[^>]*>)',
+                        lambda m:m.group(1)+'<input type="hidden" name="_csrf_token" value="'+token+'">',
+                        html,flags=re.I)
+            response.set_data(html)
+        return response
 
     @app.after_request
     def security_headers(response):
