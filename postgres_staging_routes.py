@@ -9,6 +9,7 @@ from flask import request, redirect, url_for, flash, abort
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.errors import UniqueViolation
+from postgres_activity_log import audit
 from postgres_inventory_repairs import (
     allocate_code, create_batch, receive_unit, receive_core,
     receive_customer_repair, transfer_unit, record_unit_repair,
@@ -84,6 +85,7 @@ def receive(form, norm, amount):
                     receive_core(db,row,code)
                 else:
                     receive_customer_repair(db,row,code)
+                audit(db,"receive",{"CC":"unit","CR":"core","RP":"customer_repair"}[row["type"]],code)
         return {"received":len(codes),"inventory_codes":codes},201
     except UniqueViolation:
         return "Duplicate inventory code or RMA",409
@@ -95,6 +97,7 @@ def transfer(uid, classify, norm):
     try:
         with connect() as db:
             transfer_unit(db,uid,location,request.form.get("note",""))
+            audit(db,"transfer","unit",uid,location)
         return {"transferred":uid,"location":location}
     except ValueError as e:
         return str(e),400
@@ -104,6 +107,7 @@ def repair(uid):
         with connect() as db:
             repair_id = record_unit_repair(
                 db,uid,request.form.get("type"),request.form.get("notes"))
+            audit(db,"repair_created","unit_repair",repair_id)
         return {"repair_id":repair_id},201
     except ValueError as e:
         return str(e),400
@@ -117,6 +121,7 @@ def update(rid):
         with connect() as db:
             changed = update_repair_stage(
                 db,rid,stage,STAGES,fields,request.form.get("change_note",""))
+            audit(db,"repair_updated","customer_repair",rid,stage)
         return {"repair_id":rid,"stage_changed":changed}
     except ValueError as e:
         return str(e),400
@@ -135,6 +140,7 @@ def core(cid, norm, amount):
                 raise ValueError("Core already converted")
             if action == "convert":
                 code,cost,uid = convert_core_to_stock(db,cid,norm)
+                audit(db,"core_converted","core",cid,code)
                 return {"inventory_code":code,"cost":cost,"unit_id":uid},201
             if action == "stage":
                 stage = form.get("stage","")
@@ -143,6 +149,7 @@ def core(cid, norm, amount):
                 db.execute(
                     "UPDATE core_items SET stage=%s,qc_result=NULL WHERE id=%s",
                     (stage,cid))
+                audit(db,"core_stage","core",cid,stage)
                 return {"core_id":cid,"stage":stage}
             if action == "qc":
                 result = form.get("result","")
@@ -155,6 +162,7 @@ def core(cid, norm, amount):
                     qc_date=%s,qc_notes=%s,stage=%s WHERE id=%s""",
                     (result,technician,date.today().isoformat(),
                      form.get("notes","").strip(),stage,cid))
+                audit(db,"core_qc","core",cid,result)
                 return {"core_id":cid,"stage":stage}
             if action == "transaction":
                 method = form.get("labor_method","manual")
@@ -175,6 +183,7 @@ def core(cid, norm, amount):
                     VALUES (%s,CURRENT_TIMESTAMP,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (cid,form.get("technician","").strip(),description,method,
                      hours,rate,labor,parts,other))
+                audit(db,"core_transaction","core",cid)
                 return {"core_id":cid,"transaction_recorded":True},201
             raise ValueError("Unknown core action")
     except ValueError as e:
