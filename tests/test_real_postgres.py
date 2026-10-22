@@ -219,6 +219,8 @@ class RealPostgresTests(unittest.TestCase):
 
 
  def test_postgresql_staging_http_workflows(self):
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
   from app import app
   from postgres_staging_routes import receive, transfer, repair, update, core
   os.environ["CCM_STAGING_DATABASE_URL"]=URL
@@ -251,6 +253,7 @@ class RealPostgresTests(unittest.TestCase):
     self.assertEqual(result.json["cost"],77.)
     self.assertEqual(client.post("/cores/"+str(cid),data={"action":"convert"}).status_code,400)
   finally:
+   os.environ.pop("CCM_PG_STAGING",None)
    os.environ.pop("CCM_STAGING_DATABASE_URL",None)
 
  def test_rollback(self):
