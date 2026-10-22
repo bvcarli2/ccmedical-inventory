@@ -217,6 +217,42 @@ class RealPostgresTests(unittest.TestCase):
    os.environ.pop("CCM_PG_STAGING",None)
    os.environ.pop("CCM_STAGING_DATABASE_URL",None)
 
+
+ def test_postgresql_staging_http_workflows(self):
+  from app import app
+  from postgres_staging_routes import receive, transfer, repair, update, core
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  app.config["TESTING"]=True
+  try:
+   with app.test_client() as client:
+    form={"type[]":["CC","CR","RP"],"manufacturer[]":["GE"]*3,
+      "product[]":["Venue","Probe","Venue"],"serial[]":["HTTP-1","HTTP-2","HTTP-3"],
+      "location[]":["A1"]*3,"supplier[]":["Test"]*3,"cost[]":["100","40","0"],
+      "customer[]":["","","Test Hospital"],"rma[]":["","","HTTP-RMA-1"]}
+    response=client.post("/inventory/new",data=form)
+    self.assertEqual(response.status_code,201,response.data[:300])
+    cc,cr,rp=response.json["inventory_codes"]
+    uid=self.db.execute("SELECT id FROM units WHERE inventory_code=%s",(cc,)).fetchone()["id"]
+    cid=self.db.execute("SELECT id FROM core_items WHERE inventory_code=%s",(cr,)).fetchone()["id"]
+    rid=self.db.execute("SELECT id FROM customer_repairs WHERE inventory_code=%s",(rp,)).fetchone()["id"]
+    self.assertEqual(client.post("/transfer/"+str(uid),data={"location":"B2"}).status_code,200)
+    self.assertEqual(client.post("/repair/"+str(uid),data={"type":"Inspection"}).status_code,201)
+    self.assertEqual(client.post("/repairs/"+str(rid)+"/update",data={"stage":"QC"}).status_code,200)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"convert"}).status_code,400)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"stage","stage":"QC"}).status_code,200)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"qc","result":"Passed"}).status_code,400)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"transaction",
+      "description":"Repair","labor_method":"hourly","hours":"2","rate":"15",
+      "parts":"5","other":"2"}).status_code,201)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"qc",
+      "result":"Passed","technician":"Test"}).status_code,200)
+    result=client.post("/cores/"+str(cid),data={"action":"convert"})
+    self.assertEqual(result.status_code,201,result.data[:300])
+    self.assertEqual(result.json["cost"],77.)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"convert"}).status_code,400)
+  finally:
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
