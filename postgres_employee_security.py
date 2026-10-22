@@ -87,13 +87,31 @@ def register_pg_security(app, database_url):
             email=request.form.get("email","").strip().lower()
             password=request.form.get("password","")
             with db() as conn:
+                attempt=conn.execute("SELECT blocked_until FROM employee_login_attempts WHERE email=%s",(email,)).fetchone()
+                if attempt and attempt["blocked_until"]:
+                    from datetime import datetime,timezone
+                    if attempt["blocked_until"]>datetime.now(timezone.utc):
+                        return render_template_string(LOGIN,error="Too many attempts. Try again later.",token=session["_csrf_token"]),429
+            with db() as conn:
                 user=conn.execute("SELECT id,password_hash FROM employee_users WHERE LOWER(email)=%s AND active=TRUE",(email,)).fetchone()
             if user and check_password_hash(user["password_hash"],password):
+                with db() as conn:
+                    conn.execute("DELETE FROM employee_login_attempts WHERE email=%s",(email,))
                 session.clear()
                 session["employee_id"]=user["id"]
                 session["_csrf_token"]=secrets.token_urlsafe(32)
                 session.permanent=True
                 return redirect(url_for("index"))
+            with db() as conn:
+                conn.execute("""INSERT INTO employee_login_attempts(email,failures,last_failure)
+                    VALUES (%s,1,CURRENT_TIMESTAMP)
+                    ON CONFLICT(email) DO UPDATE SET
+                    failures=CASE WHEN employee_login_attempts.last_failure < CURRENT_TIMESTAMP-INTERVAL '15 minutes'
+                      THEN 1 ELSE employee_login_attempts.failures+1 END,
+                    last_failure=CURRENT_TIMESTAMP,
+                    blocked_until=CASE WHEN employee_login_attempts.failures>=4
+                      AND employee_login_attempts.last_failure >= CURRENT_TIMESTAMP-INTERVAL '15 minutes'
+                      THEN CURRENT_TIMESTAMP+INTERVAL '15 minutes' ELSE NULL END""",(email,))
             error="Invalid email or password"
         return render_template_string(LOGIN,error=error,token=session["_csrf_token"])
 
