@@ -13,8 +13,8 @@ app.config.update(
  SESSION_COOKIE_SAMESITE='Lax',
  SESSION_COOKIE_SECURE=os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1',
 )
-if os.environ.get('RENDER') and os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')!='1':
- raise RuntimeError('Deployment blocked: employee authentication is not enabled.')
+if os.environ.get('RENDER'):
+ raise RuntimeError('Deployment blocked until PostgreSQL migration, role authorization and CSRF protection are complete.')
 if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1' and (
  not os.environ.get('CCM_SECRET') or os.environ.get('CCM_SECRET')=='local-prototype-only'
 ):
