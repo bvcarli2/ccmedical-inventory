@@ -155,7 +155,7 @@ class SecureCookieConfigurationTest(unittest.TestCase):
             self.assertTrue(site.config["SESSION_COOKIE_SECURE"])
             self.assertEqual(site.config["SESSION_COOKIE_SAMESITE"],"Lax")
             with site.test_client() as client:
-                denied=client.get("/login")
+                denied=client.get("/login",environ_overrides={"wsgi.url_scheme":"http"})
                 self.assertEqual(denied.status_code,403)
                 allowed=client.get("/login",environ_overrides={"wsgi.url_scheme":"https"})
                 self.assertEqual(allowed.status_code,200)
