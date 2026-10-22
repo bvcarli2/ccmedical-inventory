@@ -104,11 +104,14 @@ class PostgreSQLStagingRoutesTest(unittest.TestCase):
         self.assertEqual(response.json["unit_id"],21)
         convert.assert_called_once()
 
-    def test_invalid_stage_does_not_connect(self):
-        with patch.object(routes,"connect") as connect:
+    def test_invalid_stage_rolls_back(self):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        with patch.object(routes,"connect",return_value=fake), \
+             patch.object(routes,"update_repair_stage",side_effect=ValueError("Invalid repair stage")):
             response = self.client.post("/repairs/11/update",data={"stage":"INVALID"})
-        # The PostgreSQL operation rejects the stage before writing.
         self.assertEqual(response.status_code,400)
+        self.assertEqual(response.data.decode(),"Invalid repair stage")
 
 if __name__ == "__main__":
     unittest.main()
