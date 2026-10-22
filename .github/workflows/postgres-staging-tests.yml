@@ -82,14 +82,14 @@ jobs:
           psql "$CCM_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO activity_log(action,entity_type,entity_id) VALUES ('receive','unit','CC-TEST-001');"
       - name: Create compressed PostgreSQL backup
         run: |
-          pg_dump --format=custom --no-owner --no-acl --file="$RUNNER_TEMP/inventory.backup" "$CCM_TEST_DATABASE_URL"
+          docker run --rm --network host -e PGPASSWORD postgres:18 pg_dump -h localhost -U testuser -d inventory_test --format=custom --no-owner --no-acl > "$RUNNER_TEMP/inventory.backup"
           test -s "$RUNNER_TEMP/inventory.backup"
           sha256sum "$RUNNER_TEMP/inventory.backup"
-          pg_restore --list "$RUNNER_TEMP/inventory.backup" > "$RUNNER_TEMP/backup_manifest.txt"
+          docker run --rm -i --network host postgres:18 pg_restore --list < "$RUNNER_TEMP/inventory.backup" > "$RUNNER_TEMP/backup_manifest.txt"
           grep -q 'TABLE DATA' "$RUNNER_TEMP/backup_manifest.txt"
       - name: Restore into separate disposable database
         run: |
-          createdb -h localhost -U testuser inventory_restore_test
-          pg_restore --exit-on-error --no-owner --no-acl --dbname="$CCM_RESTORE_TEST_DATABASE_URL" "$RUNNER_TEMP/inventory.backup"
+          docker run --rm --network host -e PGPASSWORD postgres:18 createdb -h localhost -U testuser inventory_restore_test
+          docker run --rm -i --network host -e PGPASSWORD postgres:18 pg_restore --exit-on-error --no-owner --no-acl -h localhost -U testuser -d inventory_restore_test < "$RUNNER_TEMP/inventory.backup"
       - name: Compare restored records and integrity
         run: python migration/verify_restore.py
