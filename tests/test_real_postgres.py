@@ -23,6 +23,7 @@ class RealPostgresTests(unittest.TestCase):
   if tables:
    raise RuntimeError("Refusing to run integration tests against a nonempty schema")
   cls.db.execute(Path("migration/staging_schema.sql").read_text())
+  cls.db.execute(Path("migration/product_schema.sql").read_text())
   cls.db.commit()
 
  @classmethod
@@ -59,6 +60,26 @@ class RealPostgresTests(unittest.TestCase):
    self.assertTrue(changed)
    self.assertEqual(db.execute("SELECT count(*) AS n FROM customer_repair_history WHERE repair_id=%s",(repair_id,)).fetchone()["n"],2)
   self.assertEqual(db.execute("SELECT count(*) AS n FROM units").fetchone()["n"],2)
+
+ def test_product_catalog_compatibility_and_audit(self):
+  db=self.db
+  with db.transaction():
+   probe=db.execute("""INSERT INTO products(category,manufacturer,model,display_name)
+                      VALUES ('PRB','GE','L4-20','GE L4-20') RETURNING id""").fetchone()["id"]
+   system=db.execute("""INSERT INTO products(category,manufacturer,model,display_name)
+                       VALUES ('SYS','GE','Venue','GE Venue') RETURNING id""").fetchone()["id"]
+   db.execute("""INSERT INTO product_part_numbers(product_id,part_number)
+                 VALUES (%s,%s)""",(probe,"TEST-PART"))
+   db.execute("""INSERT INTO product_compatibility(probe_id,system_id)
+                 VALUES (%s,%s)""",(probe,system))
+   db.execute("""INSERT INTO product_audit(product_id,action,actor)
+                 VALUES (%s,'Test insert','Test runner')""",(probe,))
+   row=db.execute("""SELECT p.model,STRING_AGG(pn.part_number, ', ') AS parts
+                     FROM products p LEFT JOIN product_part_numbers pn ON pn.product_id=p.id
+                     WHERE p.id=%s GROUP BY p.id""",(probe,)).fetchone()
+   self.assertEqual(row["parts"],"TEST-PART")
+   self.assertEqual(db.execute("SELECT count(*) AS n FROM product_compatibility").fetchone()["n"],1)
+   self.assertEqual(db.execute("SELECT count(*) AS n FROM product_audit").fetchone()["n"],1)
 
  def test_rollback(self):
   db=self.db
