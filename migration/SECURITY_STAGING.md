@@ -36,3 +36,9 @@ complete format validation. Before enabling real customer uploads, implement
 antivirus scanning and content decoding, encrypted durable private storage,
 storage lifecycle/retention, quotas, backup/restore, per-customer access
 controls, and an operational upload UI. No public Render deployment is allowed.
+
+## Employee activity history
+
+PostgreSQL staging now records inventory receiving, location transfers, unit repair creation, customer repair updates, core stage changes, QC decisions, core cost transactions, core conversion, and customer repair attachment uploads. Entries are written in the same database transaction as the corresponding change so failed operations do not leave success events. In secured mode, entries include the authenticated employee ID; unsecured staging tests record a null actor. Audit details are deliberately limited to non-sensitive identifiers, statuses and locations; notes, passwords and file contents are not copied into the audit history.
+
+This is an initial database audit trail, not a production-grade immutable ledger. The history is not yet displayed in the employee interface; access-controlled reporting, tamper resistance, retention, product database change coverage and administrative activity review remain open.
