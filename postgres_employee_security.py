@@ -108,7 +108,6 @@ def register_pg_security(app, database_url):
             with db() as conn:
                 attempt=conn.execute("SELECT blocked_until FROM employee_login_attempts WHERE email=%s",(email,)).fetchone()
                 if attempt and attempt["blocked_until"]:
-                    from datetime import datetime,timezone
                     if attempt["blocked_until"]>datetime.now(timezone.utc):
                         return render_template_string(LOGIN,error="Too many attempts. Try again later.",token=session["_csrf_token"]),429
             with db() as conn:
