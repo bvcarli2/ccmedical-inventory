@@ -31,3 +31,9 @@ The Render production deployment remains blocked by the explicit `RENDER` guard 
 - Earlier disposable PostgreSQL integration tests verified receiving, transfers, customer repairs, core QC, cost calculation and conversion.
 - This is not a production security certification. HTTPS/proxy/session configuration, audit trail, upload content inspection and private storage, account recovery, backup/restore rehearsal, and independent approval remain required.
 - Do not disable the Render startup guard or deploy a public service based on these staging checks.
+
+## Step 4: PostgreSQL backup and restore rehearsal
+
+GitHub Actions now runs `backup-restore-drill` against an isolated PostgreSQL 18 service using synthetic records. It creates a custom-format `pg_dump` backup, validates its manifest and checksum, restores into a second disposable database with PostgreSQL 18 `pg_restore`, and compares table counts and deterministic SHA-256 content digests using `migration/verify_restore.py`. It also checks core-to-unit conversion references. The job runs alongside existing offline and PostgreSQL integration suites. No Render data or customer records are used.
+
+**Remaining operational requirements:** configure and verify actual managed Render backup scheduling, retention, encryption, off-site storage and access control; test recovery from a real managed backup into an isolated environment; document RPO/RTO, ownership, monitoring and restore authorization. File attachments live outside PostgreSQL and need their own durable backup and recovery plan. This CI rehearsal is not evidence that the existing Render database has recoverable backups. Do not deploy a public web service or remove the Render guard.
