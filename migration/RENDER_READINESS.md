@@ -24,3 +24,10 @@ The Render production deployment remains blocked by the explicit `RENDER` guard 
 7. Independent security review and authorized owner sign-off are required before changing the startup guard.
 
 **Do not add a deployable Render Blueprint or web service until these blockers are cleared.** The isolated Render database is not changed by these commits.
+
+## Latest staging hardening (2026-10-22)
+
+- Added an opt-in secured staging request-body limit (10 MiB) and additional browser response headers, with offline regression tests.
+- Earlier disposable PostgreSQL integration tests verified receiving, transfers, customer repairs, core QC, cost calculation and conversion.
+- This is not a production security certification. HTTPS/proxy/session configuration, audit trail, upload content inspection and private storage, account recovery, backup/restore rehearsal, and independent approval remain required.
+- Do not disable the Render startup guard or deploy a public service based on these staging checks.
