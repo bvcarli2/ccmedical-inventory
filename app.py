@@ -319,6 +319,16 @@ if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1':
  from employee_auth import register_employee_auth
  register_employee_auth(app,conn)
 
+# Optional secured PostgreSQL staging. Install before the dispatch bridge.
+# This does not lift the Render deployment guard.
+if os.environ.get('CCM_PG_SECURE')=='1':
+ if os.environ.get('CCM_PG_STAGING')!='1':
+  raise RuntimeError('CCM_PG_SECURE requires CCM_PG_STAGING=1')
+ if not os.environ.get('CCM_SECRET') or os.environ['CCM_SECRET']=='local-prototype-only':
+  raise RuntimeError('A strong CCM_SECRET is required for secure staging')
+ from postgres_employee_security import register_pg_security
+ register_pg_security(app,os.environ['CCM_STAGING_DATABASE_URL'])
+
 # Local-only PostgreSQL staging dispatch. Existing SQLite paths stay unchanged.
 # Render startup is intentionally blocked above until security is complete.
 if os.environ.get('CCM_PG_STAGING')=='1':
