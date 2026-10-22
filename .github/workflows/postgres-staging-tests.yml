@@ -44,3 +44,52 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt -r migration/requirements.txt
       - run: python -m unittest discover -s tests -p 'test_real_postgres.py' -v
+
+  backup-restore-drill:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: inventory_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U testuser -d inventory_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: testpassword
+      CCM_TEST_DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inventory_test
+      CCM_RESTORE_TEST_DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/inventory_restore_test
+      CCM_BACKUP_RESTORE_CI: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt -r migration/requirements.txt
+      - name: Create disposable database and synthetic inventory records
+        run: |
+          psql "$CCM_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f migration/staging_schema.sql
+          psql "$CCM_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f migration/product_schema.sql
+          psql "$CCM_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO units(product_raw,inventory_code,serial,cost) VALUES ('Synthetic GE Venue','CC-TEST-001','TEST-123',77.5);"
+          psql "$CCM_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO core_items(inventory_code,product_raw,original_cost,created_at) VALUES ('CR-TEST-001','Synthetic Core',35,'2026-10-22');"
+          psql "$CCM_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO customer_repairs(rma,customer,received_date,stage_started_at,created_at,updated_at) VALUES ('RP-TEST-001','Synthetic Customer','2026-10-22','2026-10-22','2026-10-22','2026-10-22');"
+          psql "$CCM_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO activity_log(action,entity_type,entity_id) VALUES ('receive','unit','CC-TEST-001');"
+      - name: Create compressed PostgreSQL backup
+        run: |
+          pg_dump --format=custom --no-owner --no-acl --file="$RUNNER_TEMP/inventory.backup" "$CCM_TEST_DATABASE_URL"
+          test -s "$RUNNER_TEMP/inventory.backup"
+          sha256sum "$RUNNER_TEMP/inventory.backup"
+          pg_restore --list "$RUNNER_TEMP/inventory.backup" > "$RUNNER_TEMP/backup_manifest.txt"
+          grep -q 'TABLE DATA' "$RUNNER_TEMP/backup_manifest.txt"
+      - name: Restore into separate disposable database
+        run: |
+          createdb -h localhost -U testuser inventory_restore_test
+          pg_restore --exit-on-error --no-owner --no-acl --dbname="$CCM_RESTORE_TEST_DATABASE_URL" "$RUNNER_TEMP/inventory.backup"
+      - name: Compare restored records and integrity
+        run: python migration/verify_restore.py
