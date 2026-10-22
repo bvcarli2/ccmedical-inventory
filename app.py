@@ -330,6 +330,13 @@ if os.environ.get('CCM_PG_STAGING')=='1':
  install_staging_routes(app,norm,classify,amount)
 
 from product_database import register_product_routes
+# PostgreSQL read-only dashboard and reporting routes for local staging.
+if os.environ.get('CCM_PG_STAGING')=='1':
+ from postgres_dashboard import install_dashboard_routes
+ install_dashboard_routes(app,os.environ['CCM_STAGING_DATABASE_URL'],
+                          TEMPLATE,CORE_TEMPLATE,REPAIR_TEMPLATE,
+                          REPAIR_STAGES,repair_context)
+
 if os.environ.get('CCM_PG_STAGING')=='1':
  from postgres_backend import PGConnection
  def product_pg_conn():
