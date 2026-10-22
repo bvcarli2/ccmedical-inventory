@@ -393,6 +393,44 @@ class RealPostgresTests(unittest.TestCase):
   after=self.db.execute("SELECT count(*) AS n FROM activity_log").fetchone()["n"]
   self.assertEqual(after,before)
 
+ def test_admin_role_and_unknown_write_denied(self):
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+    VALUES (%s,%s,'admin') ON CONFLICT (LOWER(email)) DO UPDATE SET
+    password_hash=EXCLUDED.password_hash,role='admin',active=TRUE""",
+    ("admin-check@example.test",generate_password_hash("synthetic-admin-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-admin-test-key"
+  @site.get("/")
+  def index():
+   return "ok"
+  @site.get("/products/admin")
+  def product_admin_view():
+   return "admin"
+  @site.post("/unreviewed-write")
+  def unreviewed_write():
+   return "should not execute"
+  @site.post("/transfer/1",endpoint="transfer")
+  def transfer():
+   return "ok"
+  register_pg_security(site,URL)
+  with site.test_client() as client:
+   client.get("/login")
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+    "email":"admin-check@example.test","password":"synthetic-admin-password"}).status_code,302)
+   self.assertEqual(client.get("/products/admin").status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/transfer/1",data={}).status_code,403)
+   self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,200)
+   self.assertEqual(client.post("/unreviewed-write",data={"_csrf_token":token}).status_code,403)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
