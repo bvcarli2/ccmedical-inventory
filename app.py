@@ -5,7 +5,21 @@ from flask import Flask,request,render_template_string,redirect,url_for,flash,se
 from openpyxl import load_workbook
 BASE=Path(__file__).resolve().parent
 DB=BASE/'inventory.db'
-app=Flask(__name__);app.secret_key=os.environ.get('CCM_SECRET','local-prototype-only')
+app=Flask(__name__)
+# Never expose the local prototype to the internet without explicit secure mode.
+app.secret_key=os.environ.get('CCM_SECRET','local-prototype-only')
+app.config.update(
+ SESSION_COOKIE_HTTPONLY=True,
+ SESSION_COOKIE_SAMESITE='Lax',
+ SESSION_COOKIE_SECURE=os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1',
+)
+if os.environ.get('RENDER') and os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')!='1':
+ raise RuntimeError('Deployment blocked: employee authentication is not enabled.')
+if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1' and (
+ not os.environ.get('CCM_SECRET') or os.environ.get('CCM_SECRET')=='local-prototype-only'
+):
+ raise RuntimeError('A unique CCM_SECRET is required for employee authentication.')
+
 SCHEMA='''CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY,source_sheet TEXT,source_row INTEGER,manufacturer TEXT,product_raw TEXT,product_key TEXT,serial TEXT,cost REAL,dom TEXT,notes TEXT,location_raw TEXT,physical_location TEXT,status TEXT,condition TEXT,review TEXT, UNIQUE(source_sheet,source_row)); CREATE TABLE IF NOT EXISTS movements(id INTEGER PRIMARY KEY,unit_id INTEGER,old_location TEXT,new_location TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,note TEXT); CREATE TABLE IF NOT EXISTS repair_orders(id INTEGER PRIMARY KEY,unit_id INTEGER,repair_type TEXT,status TEXT DEFAULT 'Open',notes TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS integration_links(id INTEGER PRIMARY KEY,unit_id INTEGER,system TEXT,external_id TEXT,sync_state TEXT DEFAULT 'not_synced');'''
 def conn():
  c=sqlite3.connect(DB);c.row_factory=sqlite3.Row;return c
@@ -299,6 +313,12 @@ def repair(uid):
  c=conn();u=c.execute('SELECT status FROM units WHERE id=?',(uid,)).fetchone()
  if not u or u['status']=='Sold archive':c.close();return 'Sold records cannot receive new repairs in this prototype',400
  c.execute('INSERT INTO repair_orders(unit_id,repair_type,notes) VALUES (?,?,?)',(uid,request.form.get('type'),request.form.get('notes')));c.commit();c.close();flash('Repair record created');return redirect(url_for('unit',uid=uid))
+# Opt-in local employee security test. The Render deployment remains blocked
+# until PostgreSQL migration and write-route security reviews are complete.
+if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1':
+ from employee_auth import register_employee_auth
+ register_employee_auth(app,conn)
+
 from product_database import register_product_routes
 register_product_routes(app,conn,BASE)
 
