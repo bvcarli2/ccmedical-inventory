@@ -112,6 +112,31 @@ class RealPostgresTests(unittest.TestCase):
    os.environ.pop("CCM_PG_STAGING",None)
    os.environ.pop("CCM_STAGING_DATABASE_URL",None)
 
+ def test_dashboard_and_reporting_flask_routes(self):
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  try:
+   from app import app
+   app.config["TESTING"]=True
+   with app.test_client() as client:
+    for path in ("/","/?view=All","/?q=Venue","/cores","/repairs",
+                 "/repairs?stage=QC","/repairs?q=TEST"):
+     response=client.get(path)
+     self.assertEqual(response.status_code,200,(path,response.data[:300]))
+    self.assertEqual(client.get("/unit/999999999").status_code,404)
+    self.assertEqual(client.get("/repairs/999999999").status_code,404)
+    uid=self.db.execute("SELECT id FROM units ORDER BY id LIMIT 1").fetchone()
+    if uid:
+     response=client.get("/unit/"+str(uid["id"]))
+     self.assertEqual(response.status_code,200,response.data[:300])
+    rid=self.db.execute("SELECT id FROM customer_repairs ORDER BY id LIMIT 1").fetchone()
+    if rid:
+     response=client.get("/repairs/"+str(rid["id"]))
+     self.assertEqual(response.status_code,200,response.data[:300])
+  finally:
+   os.environ.pop("CCM_PG_STAGING",None)
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
