@@ -66,6 +66,8 @@ def register_pg_security(app, database_url):
             session.clear()
             return redirect(url_for("pg_employee_login"))
         g.employee_role=user["role"]
+        if request.path.startswith("/products/admin") and user["role"]!="admin":
+            abort(403)
         if user["role"]!="admin":
             session.pop("product_admin",None)
         else:
@@ -123,6 +125,30 @@ def register_pg_security(app, database_url):
         response.headers["Referrer-Policy"]="same-origin"
         response.headers["Cache-Control"]="no-store"
         return response
+
+    @app.cli.command("provision-pg-employee")
+    def provision_employee():
+        email=os.environ.get("CCM_EMPLOYEE_EMAIL","").strip().lower()
+        password=os.environ.get("CCM_EMPLOYEE_PASSWORD","")
+        role=os.environ.get("CCM_EMPLOYEE_ROLE","viewer")
+        if not email or "@" not in email or len(password)<16 or role not in ("admin","employee","viewer"):
+            raise RuntimeError("Set CCM_EMPLOYEE_EMAIL, CCM_EMPLOYEE_PASSWORD (16+ chars), and CCM_EMPLOYEE_ROLE")
+        with db() as conn:
+            conn.execute("""INSERT INTO employee_users(email,password_hash,role,active)
+                VALUES (%s,%s,%s,TRUE)
+                ON CONFLICT (LOWER(email)) DO UPDATE SET
+                password_hash=EXCLUDED.password_hash,role=EXCLUDED.role,active=TRUE""",
+                (email,generate_password_hash(password),role))
+        print("Employee provisioned. Clear CCM_EMPLOYEE_PASSWORD immediately.")
+
+    @app.cli.command("deactivate-pg-employee")
+    def deactivate_employee():
+        email=os.environ.get("CCM_EMPLOYEE_EMAIL","").strip().lower()
+        if not email:
+            raise RuntimeError("Set CCM_EMPLOYEE_EMAIL")
+        with db() as conn:
+            result=conn.execute("UPDATE employee_users SET active=FALSE WHERE LOWER(email)=%s",(email,))
+        print("Accounts deactivated:",result.rowcount)
 
     @app.cli.command("create-pg-admin")
     def create_admin():
