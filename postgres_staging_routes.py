@@ -28,6 +28,10 @@ def install_staging_routes(app, norm, classify, amount):
     @app.before_request
     def pg_staging_dispatch():
         # Staging only, never a cloud entrypoint. Flask app also blocks Render.
+        # Product routes use the PostgreSQL adapter registered by app.py.
+        # Staging is local-only and remains blocked on Render.
+        if request.path == "/products" or request.path.startswith("/products/"):
+            return None
         if request.endpoint not in ALLOWED or request.method != "POST":
             abort(404, "Endpoint not available in PostgreSQL staging mode")
         if request.endpoint == "inventory_new":
