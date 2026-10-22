@@ -160,10 +160,13 @@ class RealPostgresTests(unittest.TestCase):
   def transfer(uid):
    return "changed"
   register_pg_security(site,URL)
+  self.assertEqual(site.config["MAX_CONTENT_LENGTH"],10*1024*1024)
   with site.test_client() as client:
    self.assertEqual(client.get("/").status_code,302)
    login=client.get("/login")
    self.assertEqual(login.status_code,200)
+   self.assertEqual(login.headers["X-Frame-Options"],"DENY")
+   self.assertIn("geolocation=()",login.headers["Permissions-Policy"])
    with client.session_transaction() as sess:
     token=sess["_csrf_token"]
    self.assertEqual(client.post("/login",data={"email":"viewer@example.test",
