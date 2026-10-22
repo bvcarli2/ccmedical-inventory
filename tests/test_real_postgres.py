@@ -81,6 +81,35 @@ class RealPostgresTests(unittest.TestCase):
    self.assertEqual(db.execute("SELECT count(*) AS n FROM product_compatibility").fetchone()["n"],1)
    self.assertEqual(db.execute("SELECT count(*) AS n FROM product_audit").fetchone()["n"],1)
 
+ def test_product_flask_routes_postgresql(self):
+  # Use the same isolated disposable PostgreSQL DB as the integration tests.
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  try:
+   from app import app
+   app.config["TESTING"]=True
+   with app.test_client() as client:
+    page=client.get("/products")
+    self.assertEqual(page.status_code,200,page.data[:300])
+    self.assertIn(b"Product Database",page.data)
+    response=client.post("/products/request",data={
+     "request_type":"New Product","category":"PRB",
+     "manufacturer":"GE","model":"TEST-REQUEST-PROBE",
+     "notes":"Synthetic test request"})
+    self.assertEqual(response.status_code,302)
+    self.assertEqual(self.db.execute("SELECT count(*) AS n FROM product_requests WHERE model='TEST-REQUEST-PROBE'").fetchone()["n"],1)
+    with client.session_transaction() as sess:
+     sess["product_admin"]=True
+    admin=client.get("/products/admin")
+    self.assertEqual(admin.status_code,200,admin.data[:300])
+    probe=self.db.execute("SELECT id FROM products WHERE model='L4-20'").fetchone()
+    if probe:
+     detail=client.get("/products/"+str(probe["id"]))
+     self.assertEqual(detail.status_code,200,detail.data[:300])
+  finally:
+   os.environ.pop("CCM_PG_STAGING",None)
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
