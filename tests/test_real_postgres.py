@@ -189,6 +189,7 @@ class RealPostgresTests(unittest.TestCase):
    self.assertEqual(client.get("/products/admin").status_code,403)
    self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
    # Repeated invalid passwords are blocked by shared PostgreSQL state.
+   self.assertEqual(client.get("/login").status_code,200)
    for _ in range(5):
     with client.session_transaction() as sess:
      token=sess["_csrf_token"]
