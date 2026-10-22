@@ -131,5 +131,15 @@ class StagingSecurityDefaultsTest(unittest.TestCase):
                                     content_type="application/octet-stream")
             self.assertEqual(too_large.status_code,413)
 
+class AttachmentValidationTest(unittest.TestCase):
+    def test_signatures_and_size(self):
+        from postgres_attachments import identify
+        self.assertEqual(identify(bytes.fromhex("ffd8ff") + b"test")[0],"image/jpeg")
+        self.assertEqual(identify(bytes.fromhex("89504e470d0a1a0a") + b"test")[0],"image/png")
+        self.assertEqual(identify(b"%PDF-1.7\\nexample\\n%%EOF")[0],"application/pdf")
+        for bad in (b"<svg></svg>",b"hello",b"%PDF-1.7",b"x"*(5*1024*1024+1)):
+            with self.assertRaises(ValueError):
+                identify(bad)
+
 if __name__ == "__main__":
     unittest.main()
