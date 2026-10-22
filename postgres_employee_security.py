@@ -21,6 +21,7 @@ WRITE_ROLES = {
  "transfer": {"admin","employee"},
  "repair": {"admin","employee"},
  "repair_update": {"admin","employee"},
+ "repair_new": {"admin","employee"},
  "core_detail": {"admin","employee"},
  "request_product": {"admin","employee"},
  "compatibility": {"admin","employee"},
