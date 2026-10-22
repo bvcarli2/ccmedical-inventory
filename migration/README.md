@@ -45,3 +45,16 @@ The existing Flask application uses SQLite-specific operations throughout
 - Verify no credentials or customer data are tracked in Git history.
 - Deploy to a private test environment only after migration and security
   checks pass. Never point an unreviewed build at production data.
+
+## 5. PostgreSQL backend integration progress (October 22, 2026)
+
+- `postgres_backend.py` provides an initial psycopg connection wrapper and
+  quoted-literal-aware `?` to `%s` bind translation.
+- `tests/test_postgres_backend.py` contains offline unit tests for translation
+  and explicitly unsupported operations. Tests have not been executed in CI.
+- The adapter deliberately refuses SQLite-specific commands and INSERTs without
+  `RETURNING`; it is not wired into `app.py` yet.
+- Next: PostgreSQL DDL, query-by-query conversion in `app.py` and
+  `product_database.py`, then integration tests against an isolated test DB.
+- Render deployment must remain blocked until this work and security checks
+  are complete.
