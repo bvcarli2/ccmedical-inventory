@@ -105,6 +105,7 @@ def register_pg_security(app, database_url):
         if request.method=="POST":
             email=request.form.get("email","").strip().lower()
             password=request.form.get("password","")
+            client_ip=request.remote_addr or "unknown"
             with db() as conn:
                 attempt=conn.execute("SELECT blocked_until FROM employee_login_attempts WHERE email=%s",(email,)).fetchone()
                 if attempt and attempt["blocked_until"]:
