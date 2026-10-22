@@ -54,16 +54,17 @@ def qmark_to_pyformat(sql):
     return "".join(out)
 
 class PGConnection:
-    def __init__(self, url):
+    def __init__(self, url, strict_inserts=True):
         self._conn = psycopg.connect(url, row_factory=dict_row)
         self._lastrowid = None
+        self._strict_inserts = strict_inserts
 
     def execute(self, sql, params=()):
         statement = sql.strip()
         # Fail explicitly rather than accidentally executing SQLite-specific SQL.
         if re.search(r"\b(PRAGMA|AUTOINCREMENT)\b|\bINSERT\s+OR\s+IGNORE\b|\bBEGIN\s+IMMEDIATE\b|\bCOLLATE\s+NOCASE\b", statement, re.I):
             raise NotImplementedError("SQLite-specific SQL must be migrated explicitly")
-        if re.search(r"\bINSERT\s+INTO\b", statement, re.I) and not re.search(r"\bRETURNING\b", statement, re.I):
+        if self._strict_inserts and re.search(r"\bINSERT\s+INTO\b", statement, re.I) and not re.search(r"\bRETURNING\b", statement, re.I):
             raise NotImplementedError("INSERT statements must use RETURNING id or explicit conflict handling on PostgreSQL")
         cursor = self._conn.execute(qmark_to_pyformat(statement), params)
         return cursor
