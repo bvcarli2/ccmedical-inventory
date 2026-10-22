@@ -28,3 +28,5 @@ CREATE TABLE IF NOT EXISTS repair_attachments (
  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_repair_attachments_repair ON repair_attachments(repair_id);
+
+CREATE TABLE IF NOT EXISTS activity_log (id BIGSERIAL PRIMARY KEY, employee_id BIGINT REFERENCES employee_users(id), action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
