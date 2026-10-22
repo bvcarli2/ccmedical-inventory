@@ -30,6 +30,8 @@ def install_staging_routes(app, norm, classify, amount):
         # Staging only, never a cloud entrypoint. Flask app also blocks Render.
         # Product routes use the PostgreSQL adapter registered by app.py.
         # Staging is local-only and remains blocked on Render.
+        if request.method == "GET" and request.endpoint in {"index","unit","cores","repairs","repair_detail"}:
+            return None
         if request.path == "/products" or request.path.startswith("/products/"):
             return None
         if request.endpoint not in ALLOWED or request.method != "POST":
