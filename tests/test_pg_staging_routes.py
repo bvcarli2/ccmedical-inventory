@@ -119,7 +119,8 @@ class StagingSecurityDefaultsTest(unittest.TestCase):
         app = Flask(__name__)
         configure_staging_limits(app)
         app.after_request(apply_staging_headers)
-        app.add_url_rule("/upload",view_func=lambda: "ok",methods=["POST"])
+        from flask import request
+        app.add_url_rule("/upload",view_func=lambda: request.get_data() and "ok",methods=["POST"])
         with app.test_client() as client:
             ok = client.post("/upload",data="small")
             self.assertEqual(ok.status_code,200)
