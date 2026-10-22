@@ -13,3 +13,26 @@ Security features implemented: PostgreSQL-backed password hashes, account active
 **Still required before production:** complete all GET/POST application workflows, full CSRF/permission review, login rate limiting and lockouts, account provisioning and reset flows, HTTPS and trusted proxy configuration, audit logging, database backup/restore rehearsal, secrets management, and an explicit authorized deployment review. The Render database is **not** migrated by these CI tests, and no public web service has been deployed.
 
 CI uses only disposable PostgreSQL 18. Do not run the destructive integration suite against Render.
+
+## Private repair attachments (staging only)
+
+The secured PostgreSQL application exposes authenticated upload and download routes at
+`POST /repairs/<repair_id>/attachments` and
+`GET /repairs/<repair_id>/attachments/<attachment_id>`.
+Uploads require admin or employee role and a valid CSRF token; downloads require
+an authenticated account. File types are restricted to JPEG, PNG and PDF by
+basic header signature checks; files are limited to 5 MiB each, while HTTP
+request bodies are capped at 10 MiB. Original filenames are metadata only.
+Storage uses unpredictable names in a private, non-static directory with
+restrictive filesystem permissions. Database metadata records SHA-256 and uploader.
+
+Set `CCM_PRIVATE_UPLOAD_DIR` to a private persistent directory for local tests.
+The default `/tmp/ccmedical-private-staging` is ephemeral and must **not** be
+used for durable files. These endpoints are API routes; attachment upload
+buttons and galleries have not yet been added to the employee interface.
+
+**Not production-ready:** Signature checks are not malware scanning or
+complete format validation. Before enabling real customer uploads, implement
+antivirus scanning and content decoding, encrypted durable private storage,
+storage lifecycle/retention, quotas, backup/restore, per-customer access
+controls, and an operational upload UI. No public Render deployment is allowed.
