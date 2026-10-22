@@ -259,6 +259,10 @@ class RealPostgresTests(unittest.TestCase):
     self.assertEqual(result.status_code,201,result.data[:300])
     self.assertEqual(result.json["cost"],77.)
     self.assertEqual(client.post("/cores/"+str(cid),data={"action":"convert"}).status_code,400)
+    actions=[row["action"] for row in self.db.execute("SELECT action FROM activity_log ORDER BY id").fetchall()]
+    for action in ("receive","transfer","repair_created","repair_updated","core_stage","core_transaction","core_qc","core_converted"):
+     self.assertIn(action,actions)
+    self.assertEqual(actions.count("core_converted"),1)
   finally:
    os.environ.pop("CCM_PG_STAGING",None)
    os.environ.pop("CCM_STAGING_DATABASE_URL",None)
@@ -302,6 +306,9 @@ class RealPostgresTests(unittest.TestCase):
      uploaded=client.post(endpoint,data={"file":(io.BytesIO((bytes.fromhex("ffd8ff")+b"sample")),"photo.jpg"),"_csrf_token":token})
      self.assertEqual(uploaded.status_code,201,uploaded.data[:300])
      aid=uploaded.json["attachment_id"]
+     log=self.db.execute("SELECT employee_id,entity_id FROM activity_log WHERE action=%s ORDER BY id DESC LIMIT 1",("attachment_uploaded",)).fetchone()
+     self.assertIsNotNone(log["employee_id"])
+     self.assertEqual(log["entity_id"],str(rid))
      downloaded=client.get(endpoint+"/"+str(aid))
      self.assertEqual(downloaded.status_code,200)
      self.assertEqual(downloaded.data,(bytes.fromhex("ffd8ff")+b"sample"))
