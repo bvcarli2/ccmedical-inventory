@@ -146,6 +146,10 @@ class RealPostgresTests(unittest.TestCase):
       VALUES (%s,%s,'viewer') ON CONFLICT (LOWER(email)) DO UPDATE
       SET password_hash=EXCLUDED.password_hash,role='viewer',active=TRUE""",
       ("viewer@example.test",generate_password_hash("very-long-test-password")))
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+      VALUES (%s,%s,'employee') ON CONFLICT (LOWER(email)) DO UPDATE
+      SET password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+      ("worker@example.test",generate_password_hash("very-long-test-password")))
   self.db.commit()
   site=Flask(__name__)
   site.secret_key="only-a-synthetic-ci-secret"
@@ -174,6 +178,16 @@ class RealPostgresTests(unittest.TestCase):
    self.assertEqual(client.post("/logout",data={}).status_code,403)
    self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
    self.assertEqual(client.get("/").status_code,302)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+       "email":"worker@example.test","password":"very-long-test-password"}).status_code,302)
+   self.assertEqual(client.post("/transfer/1",data={}).status_code,403)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,200)
+   self.assertEqual(client.get("/products/admin").status_code,403)
+   self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
    # Repeated invalid passwords are blocked by shared PostgreSQL state.
    for _ in range(5):
     with client.session_transaction() as sess:
