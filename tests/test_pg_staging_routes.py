@@ -142,5 +142,24 @@ class AttachmentValidationTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 identify(bad)
 
+class SecureCookieConfigurationTest(unittest.TestCase):
+    def test_secure_cookie_and_https_gate(self):
+        import os
+        from unittest.mock import patch
+        from flask import Flask
+        from postgres_employee_security import register_pg_security
+        with patch.dict(os.environ, {"CCM_REQUIRE_HTTPS":"1"}):
+            site=Flask(__name__)
+            site.secret_key="synthetic-https-test-secret"
+            register_pg_security(site,"postgresql://unused")
+            self.assertTrue(site.config["SESSION_COOKIE_SECURE"])
+            self.assertEqual(site.config["SESSION_COOKIE_SAMESITE"],"Lax")
+            with site.test_client() as client:
+                denied=client.get("/login")
+                self.assertEqual(denied.status_code,403)
+                allowed=client.get("/login",environ_overrides={"wsgi.url_scheme":"https"})
+                self.assertEqual(allowed.status_code,200)
+                self.assertIn("max-age=31536000",allowed.headers["Strict-Transport-Security"])
+
 if __name__ == "__main__":
     unittest.main()
