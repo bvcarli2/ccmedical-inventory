@@ -319,6 +319,16 @@ if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1':
  from employee_auth import register_employee_auth
  register_employee_auth(app,conn)
 
+# Local-only PostgreSQL staging dispatch. Existing SQLite paths stay unchanged.
+# Render startup is intentionally blocked above until security is complete.
+if os.environ.get('CCM_PG_STAGING')=='1':
+ if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1':
+  raise RuntimeError('PostgreSQL staging bridge is incompatible with SQLite employee auth')
+ if not os.environ.get('CCM_STAGING_DATABASE_URL'):
+  raise RuntimeError('CCM_STAGING_DATABASE_URL is required for PostgreSQL staging')
+ from postgres_staging_routes import install_staging_routes
+ install_staging_routes(app,norm,classify,amount)
+
 from product_database import register_product_routes
 register_product_routes(app,conn,BASE)
 
