@@ -69,3 +69,5 @@ CREATE TABLE customer_repair_history (
  changed_at TEXT NOT NULL, note TEXT
 );
 CREATE INDEX idx_repair_history_repair ON customer_repair_history(repair_id);
+
+CREATE TABLE IF NOT EXISTS activity_log (id BIGSERIAL PRIMARY KEY, employee_id BIGINT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
