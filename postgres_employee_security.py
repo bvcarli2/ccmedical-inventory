@@ -126,6 +126,15 @@ def register_pg_security(app, database_url):
                 session.permanent=True
                 return redirect(url_for("index"))
             with db() as conn:
+                conn.execute("""INSERT INTO employee_login_ip_attempts(ip_address,failures,last_failure)
+                    VALUES (%s,1,CURRENT_TIMESTAMP)
+                    ON CONFLICT(ip_address) DO UPDATE SET
+                    failures=CASE WHEN employee_login_ip_attempts.last_failure < CURRENT_TIMESTAMP-INTERVAL '15 minutes'
+                      THEN 1 ELSE employee_login_ip_attempts.failures+1 END,
+                    last_failure=CURRENT_TIMESTAMP,
+                    blocked_until=CASE WHEN employee_login_ip_attempts.failures>=19
+                      AND employee_login_ip_attempts.last_failure >= CURRENT_TIMESTAMP-INTERVAL '15 minutes'
+                      THEN CURRENT_TIMESTAMP+INTERVAL '15 minutes' ELSE NULL END""",(client_ip,))
                 conn.execute("""INSERT INTO employee_login_attempts(email,failures,last_failure)
                     VALUES (%s,1,CURRENT_TIMESTAMP)
                     ON CONFLICT(email) DO UPDATE SET
