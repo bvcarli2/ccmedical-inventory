@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt -r migration/requirements.txt
-      - run: python -m compileall -q app.py postgres_backend.py postgres_inventory_repairs.py postgres_staging_routes.py tests
+      - run: python -m compileall -q app.py postgres_backend.py postgres_inventory_repairs.py postgres_staging_routes.py postgres_dashboard.py product_database.py tests
       - run: python -m unittest discover -s tests -p 'test_pg_staging_routes.py' -v
   postgres-integration:
     runs-on: ubuntu-latest
