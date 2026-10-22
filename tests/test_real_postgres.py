@@ -137,6 +137,43 @@ class RealPostgresTests(unittest.TestCase):
    os.environ.pop("CCM_PG_STAGING",None)
    os.environ.pop("CCM_STAGING_DATABASE_URL",None)
 
+ def test_pg_employee_security_roles_and_csrf(self):
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+      VALUES (%s,%s,'viewer') ON CONFLICT (LOWER(email)) DO UPDATE
+      SET password_hash=EXCLUDED.password_hash,role='viewer',active=TRUE""",
+      ("viewer@example.test",generate_password_hash("very-long-test-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="only-a-synthetic-ci-secret"
+  @site.get("/")
+  def index():
+   return "dashboard"
+  @site.post("/transfer/<int:uid>")
+  def transfer(uid):
+   return "changed"
+  register_pg_security(site,URL)
+  with site.test_client() as client:
+   self.assertEqual(client.get("/").status_code,302)
+   login=client.get("/login")
+   self.assertEqual(login.status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"email":"viewer@example.test",
+       "password":"very-long-test-password"}).status_code,403)
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+       "email":"viewer@example.test","password":"very-long-test-password"}).status_code,302)
+   self.assertEqual(client.get("/").status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,403)
+   self.assertEqual(client.post("/logout",data={}).status_code,403)
+   self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
+   self.assertEqual(client.get("/").status_code,302)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
