@@ -273,7 +273,7 @@ class RealPostgresTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as private:
    os.environ["CCM_PRIVATE_UPLOAD_DIR"]=private
    try:
-    self.db.execute(Path("migration/employee_schema.sql").read_text().replace("CREATE TABLE ","CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ","CREATE INDEX IF NOT EXISTS "))
+    self.db.execute(Path("migration/employee_schema.sql").read_text())
     self.db.execute("""INSERT INTO employee_users(email,password_hash,role) VALUES (%s,%s,'employee')
       ON CONFLICT (LOWER(email)) DO UPDATE SET password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
       ("attachment-worker@example.test",generate_password_hash("long-synthetic-password")))
