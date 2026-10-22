@@ -110,7 +110,7 @@ def register_pg_security(app, database_url):
         if response.mimetype=="text/html" and session.get("_csrf_token"):
             html=response.get_data(as_text=True)
             token=str(escape(session["_csrf_token"]))
-            html=re.sub(r'(<form\\b[^>]*\\bmethod\\s*=\\s*["\\\']?post["\\\']?[^>]*>)',
+            html=re.sub(r'(<form\b[^>]*\bmethod\s*=\s*["\\\']?post["\\\']?[^>]*>)',
                         lambda m:m.group(1)+'<input type="hidden" name="_csrf_token" value="'+token+'">',
                         html,flags=re.I)
             response.set_data(html)
