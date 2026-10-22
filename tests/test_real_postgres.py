@@ -341,6 +341,58 @@ class RealPostgresTests(unittest.TestCase):
    result=client.post("/login",data={"_csrf_token":token,"email":"another@example.test","password":"invalid"},environ_overrides={"REMOTE_ADDR":"192.0.2.19"})
    self.assertEqual(result.status_code,429)
 
+ def test_security_session_expiration_and_deactivation(self):
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+     VALUES (%s,%s,'employee') ON CONFLICT (LOWER(email)) DO UPDATE SET
+     password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+     ("session-check@example.test",generate_password_hash("synthetic-strong-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-session-test-key"
+  @site.get("/")
+  def index():
+   return "ok"
+  register_pg_security(site,URL)
+  with site.test_client() as client:
+   client.get("/login")
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   response=client.post("/login",data={"_csrf_token":token,
+     "email":"session-check@example.test","password":"synthetic-strong-password"})
+   self.assertEqual(response.status_code,302)
+   self.assertEqual(client.get("/").status_code,200)
+   with client.session_transaction() as sess:
+    sess["last_seen"]=1
+   self.assertEqual(client.get("/").status_code,302)
+   with client.session_transaction() as sess:
+    self.assertNotIn("employee_id",sess)
+   client.get("/login")
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+     "email":"session-check@example.test","password":"synthetic-strong-password"}).status_code,302)
+   self.db.execute("UPDATE employee_users SET active=FALSE WHERE email=%s",("session-check@example.test",))
+   self.db.commit()
+   self.assertEqual(client.get("/").status_code,302)
+   with client.session_transaction() as sess:
+    self.assertNotIn("employee_id",sess)
+
+ def test_audit_rollback_is_atomic(self):
+  from postgres_activity_log import audit
+  before=self.db.execute("SELECT count(*) AS n FROM activity_log").fetchone()["n"]
+  try:
+   with self.db.transaction():
+    audit(self.db,"transfer","unit","synthetic-rollback")
+    raise ValueError("simulate rolled-back transfer")
+  except ValueError:
+   pass
+  after=self.db.execute("SELECT count(*) AS n FROM activity_log").fetchone()["n"]
+  self.assertEqual(after,before)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
