@@ -328,6 +328,8 @@ if os.environ.get('CCM_PG_SECURE')=='1':
   raise RuntimeError('A strong CCM_SECRET is required for secure staging')
  from postgres_employee_security import register_pg_security
  register_pg_security(app,os.environ['CCM_STAGING_DATABASE_URL'])
+ from postgres_attachments import register_attachment_routes
+ register_attachment_routes(app,os.environ['CCM_STAGING_DATABASE_URL'])
 
 # Local-only PostgreSQL staging dispatch. Existing SQLite paths stay unchanged.
 # Render startup is intentionally blocked above until security is complete.
