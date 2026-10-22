@@ -37,6 +37,9 @@ WRITE_ROLES = {
 def register_pg_security(app, database_url):
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                       PERMANENT_SESSION_LIFETIME=timedelta(hours=8))
+    from staging_security_defaults import configure_staging_limits, apply_staging_headers
+    configure_staging_limits(app)
+    app.after_request(apply_staging_headers)
     def db():
         return psycopg.connect(database_url,row_factory=dict_row)
 
