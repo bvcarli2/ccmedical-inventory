@@ -454,11 +454,11 @@ class RealPostgresTests(unittest.TestCase):
   @site.post("/transfer/<int:uid>",endpoint="transfer")
   def transfer(uid):
    return "sqlite fallback must not execute"
-  install_staging_routes(site,lambda s:s.upper(),lambda s:("Active",s),float)
+  install_staging_routes(site,lambda s:s.upper(),lambda s:("Active",s),lambda value,label:float(value or 0))
   register_pg_security(site,URL)
   from unittest.mock import patch
   import postgres_staging_routes
-  with patch.object(postgres_staging_routes,"database_url",URL,create=True):
+  with patch.dict(os.environ,{"CCM_STAGING_DATABASE_URL":URL}):
    with site.test_client() as client:
     self.assertEqual(client.get("/").status_code,302)
     self.assertEqual(client.post("/inventory/new",data={}).status_code,302)
