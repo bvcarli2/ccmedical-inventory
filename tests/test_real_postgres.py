@@ -167,12 +167,23 @@ class RealPostgresTests(unittest.TestCase):
    self.assertEqual(client.post("/login",data={"_csrf_token":token,
        "email":"viewer@example.test","password":"very-long-test-password"}).status_code,302)
    self.assertEqual(client.get("/").status_code,200)
+   self.assertEqual(client.get("/products/admin").status_code,403)
    with client.session_transaction() as sess:
     token=sess["_csrf_token"]
    self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,403)
    self.assertEqual(client.post("/logout",data={}).status_code,403)
    self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
    self.assertEqual(client.get("/").status_code,302)
+   # Repeated invalid passwords are blocked by shared PostgreSQL state.
+   for _ in range(5):
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    self.assertEqual(client.post("/login",data={"_csrf_token":token,
+        "email":"blocked@example.test","password":"invalid"}).status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+       "email":"blocked@example.test","password":"invalid"}).status_code,429)
 
  def test_rollback(self):
   db=self.db
