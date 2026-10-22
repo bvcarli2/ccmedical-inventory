@@ -298,13 +298,13 @@ class RealPostgresTests(unittest.TestCase):
       token=sess["_csrf_token"]
      endpoint="/repairs/"+str(rid)+"/attachments"
      self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO(b"<svg/>"),"bad.png"),"_csrf_token":token}).status_code,400)
-     self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO(b"\\xff\\xd8\\xffsample"),"photo.jpg")}).status_code,403)
-     uploaded=client.post(endpoint,data={"file":(io.BytesIO(b"\\xff\\xd8\\xffsample"),"photo.jpg"),"_csrf_token":token})
+     self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO((bytes.fromhex("ffd8ff")+b"sample")),"photo.jpg")}).status_code,403)
+     uploaded=client.post(endpoint,data={"file":(io.BytesIO((bytes.fromhex("ffd8ff")+b"sample")),"photo.jpg"),"_csrf_token":token})
      self.assertEqual(uploaded.status_code,201,uploaded.data[:300])
      aid=uploaded.json["attachment_id"]
      downloaded=client.get(endpoint+"/"+str(aid))
      self.assertEqual(downloaded.status_code,200)
-     self.assertEqual(downloaded.data,b"\\xff\\xd8\\xffsample")
+     self.assertEqual(downloaded.data,(bytes.fromhex("ffd8ff")+b"sample"))
      self.assertEqual(client.get(endpoint+"/999999999").status_code,404)
    finally:
     os.environ.pop("CCM_PRIVATE_UPLOAD_DIR",None)
