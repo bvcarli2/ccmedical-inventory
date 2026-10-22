@@ -318,6 +318,29 @@ class RealPostgresTests(unittest.TestCase):
    finally:
     os.environ.pop("CCM_PRIVATE_UPLOAD_DIR",None)
 
+ def test_login_ip_throttle(self):
+  from flask import Flask
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-rate-limit-secret"
+  @site.get("/")
+  def index():
+   return "ok"
+  register_pg_security(site,URL)
+  with site.test_client() as client:
+   client.get("/login")
+   for n in range(20):
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    result=client.post("/login",data={"_csrf_token":token,"email":"ip-probe-%s@example.test"%n,"password":"invalid"},environ_overrides={"REMOTE_ADDR":"192.0.2.19"})
+    self.assertEqual(result.status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   result=client.post("/login",data={"_csrf_token":token,"email":"another@example.test","password":"invalid"},environ_overrides={"REMOTE_ADDR":"192.0.2.19"})
+   self.assertEqual(result.status_code,429)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
