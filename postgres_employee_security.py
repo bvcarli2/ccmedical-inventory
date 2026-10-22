@@ -9,7 +9,7 @@ import secrets
 import hmac
 import re
 from markupsafe import escape
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 import psycopg
 from psycopg.rows import dict_row
 from flask import request, session, redirect, url_for, abort, render_template_string, g
@@ -41,11 +41,17 @@ def register_pg_security(app, database_url):
     from staging_security_defaults import configure_staging_limits, apply_staging_headers
     configure_staging_limits(app)
     app.after_request(apply_staging_headers)
+    require_https=os.environ.get("CCM_REQUIRE_HTTPS")=="1"
+    app.config["SESSION_COOKIE_SECURE"]=require_https
+    if require_https:
+        app.config["PREFERRED_URL_SCHEME"]="https"
     def db():
         return psycopg.connect(database_url,row_factory=dict_row)
 
     @app.before_request
     def employee_security_gate():
+        if require_https and not request.is_secure:
+            abort(403, "HTTPS is required")
         if request.endpoint=="static":
             return None
         if "_csrf_token" not in session:
@@ -63,6 +69,13 @@ def register_pg_security(app, database_url):
             session.clear()
             return redirect(url_for("pg_employee_login"))
         user_id=session.get("employee_id")
+        if isinstance(user_id,int):
+            now=int(datetime.now(timezone.utc).timestamp())
+            last=session.get("last_seen")
+            if not isinstance(last,int) or now-last>1800 or now-last<0:
+                session.clear()
+                return redirect(url_for("pg_employee_login"))
+            session["last_seen"]=now
         if not isinstance(user_id,int):
             return redirect(url_for("pg_employee_login"))
         with db() as conn:
@@ -105,6 +118,7 @@ def register_pg_security(app, database_url):
                     conn.execute("DELETE FROM employee_login_attempts WHERE email=%s",(email,))
                 session.clear()
                 session["employee_id"]=user["id"]
+                session["last_seen"]=int(datetime.now(timezone.utc).timestamp())
                 session["_csrf_token"]=secrets.token_urlsafe(32)
                 session.permanent=True
                 return redirect(url_for("index"))
@@ -144,6 +158,8 @@ def register_pg_security(app, database_url):
 
     @app.after_request
     def security_headers(response):
+        if require_https and request.is_secure:
+            response.headers["Strict-Transport-Security"]="max-age=31536000"
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["X-Frame-Options"]="DENY"
         response.headers["Referrer-Policy"]="same-origin"
