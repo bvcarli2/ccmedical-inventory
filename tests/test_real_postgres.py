@@ -185,6 +185,23 @@ class RealPostgresTests(unittest.TestCase):
    self.assertEqual(client.post("/login",data={"_csrf_token":token,
        "email":"blocked@example.test","password":"invalid"}).status_code,429)
 
+ def test_security_allowlist_covers_all_write_routes(self):
+  # Fail CI if a new mutating Flask endpoint is added without a role decision.
+  from postgres_employee_security import WRITE_ROLES
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  try:
+   from app import app
+   missing=[]
+   for rule in app.url_map.iter_rules():
+    if "POST" in rule.methods and rule.endpoint not in (
+       "pg_employee_login","pg_employee_logout") and rule.endpoint not in WRITE_ROLES:
+     missing.append((rule.rule,rule.endpoint))
+   self.assertEqual(missing,[],"Unreviewed POST endpoints: "+str(missing))
+  finally:
+   os.environ.pop("CCM_PG_STAGING",None)
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
