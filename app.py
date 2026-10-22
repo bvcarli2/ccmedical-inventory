@@ -330,7 +330,13 @@ if os.environ.get('CCM_PG_STAGING')=='1':
  install_staging_routes(app,norm,classify,amount)
 
 from product_database import register_product_routes
-register_product_routes(app,conn,BASE)
+if os.environ.get('CCM_PG_STAGING')=='1':
+ from postgres_backend import PGConnection
+ def product_pg_conn():
+  return PGConnection(os.environ['CCM_STAGING_DATABASE_URL'],strict_inserts=False)
+ register_product_routes(app,product_pg_conn,BASE,postgres=True)
+else:
+ register_product_routes(app,conn,BASE)
 
 if __name__=='__main__':
  if len(sys.argv)>1 and sys.argv[1]=='import':
