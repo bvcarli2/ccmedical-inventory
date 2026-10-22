@@ -263,6 +263,52 @@ class RealPostgresTests(unittest.TestCase):
    os.environ.pop("CCM_PG_STAGING",None)
    os.environ.pop("CCM_STAGING_DATABASE_URL",None)
 
+ def test_z_attachment_upload_access_and_download(self):
+  import io
+  import tempfile
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  from postgres_attachments import register_attachment_routes
+  with tempfile.TemporaryDirectory() as private:
+   os.environ["CCM_PRIVATE_UPLOAD_DIR"]=private
+   try:
+    self.db.execute(Path("migration/employee_schema.sql").read_text().replace("CREATE TABLE ","CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ","CREATE INDEX IF NOT EXISTS "))
+    self.db.execute("""INSERT INTO employee_users(email,password_hash,role) VALUES (%s,%s,'employee')
+      ON CONFLICT (LOWER(email)) DO UPDATE SET password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+      ("attachment-worker@example.test",generate_password_hash("long-synthetic-password")))
+    rid=self.db.execute("""INSERT INTO customer_repairs(rma,customer,received_date,stage_started_at,created_at,updated_at)
+      VALUES ('ATTACHMENT-RMA-1','Synthetic','2026-10-22','now','now','now') RETURNING id""").fetchone()["id"]
+    self.db.commit()
+    site=Flask(__name__)
+    site.secret_key="synthetic-attachment-secret"
+    @site.get("/")
+    def index():
+     return "ok"
+    register_pg_security(site,URL)
+    register_attachment_routes(site,URL)
+    with site.test_client() as client:
+     self.assertEqual(client.get("/repairs/"+str(rid)+"/attachments/1").status_code,302)
+     client.get("/login")
+     with client.session_transaction() as sess:
+      token=sess["_csrf_token"]
+     response=client.post("/login",data={"_csrf_token":token,"email":"attachment-worker@example.test","password":"long-synthetic-password"})
+     self.assertEqual(response.status_code,302)
+     with client.session_transaction() as sess:
+      token=sess["_csrf_token"]
+     endpoint="/repairs/"+str(rid)+"/attachments"
+     self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO(b"<svg/>"),"bad.png"),"_csrf_token":token}).status_code,400)
+     self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO(b"\\xff\\xd8\\xffsample"),"photo.jpg")}).status_code,403)
+     uploaded=client.post(endpoint,data={"file":(io.BytesIO(b"\\xff\\xd8\\xffsample"),"photo.jpg"),"_csrf_token":token})
+     self.assertEqual(uploaded.status_code,201,uploaded.data[:300])
+     aid=uploaded.json["attachment_id"]
+     downloaded=client.get(endpoint+"/"+str(aid))
+     self.assertEqual(downloaded.status_code,200)
+     self.assertEqual(downloaded.data,b"\\xff\\xd8\\xffsample")
+     self.assertEqual(client.get(endpoint+"/999999999").status_code,404)
+   finally:
+    os.environ.pop("CCM_PRIVATE_UPLOAD_DIR",None)
+
  def test_rollback(self):
   db=self.db
   before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
