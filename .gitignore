@@ -1,0 +1,21 @@
+# Local application databases and backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak
+*.backup
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+# OS and editors
+.DS_Store
+Thumbs.db
+.vscode/

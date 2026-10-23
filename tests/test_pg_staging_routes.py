@@ -1,0 +1,165 @@
+"""Offline Flask integration tests for PostgreSQL staging routes.
+
+Run: python -m unittest discover -s tests -p 'test_pg_staging_routes.py'
+These mock DB connections; they are NOT live PostgreSQL integration tests.
+"""
+import sys
+import types
+import unittest
+from unittest.mock import MagicMock, patch
+from flask import Flask
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.errors import UniqueViolation
+except ImportError:
+    psycopg = types.ModuleType("psycopg")
+    rows = types.ModuleType("psycopg.rows")
+    errors = types.ModuleType("psycopg.errors")
+    rows.dict_row = object()
+    errors.UniqueViolation = type("UniqueViolation",(Exception,),{})
+    psycopg.rows = rows
+    psycopg.errors = errors
+    sys.modules["psycopg"] = psycopg
+    sys.modules["psycopg.rows"] = rows
+    sys.modules["psycopg.errors"] = errors
+
+import postgres_staging_routes as routes
+
+def amount(value, label):
+    n = float(value or 0)
+    if n < 0:
+        raise ValueError(label)
+    return n
+
+class PostgreSQLStagingRoutesTest(unittest.TestCase):
+    def setUp(self):
+        self.app = Flask(__name__)
+        self.app.add_url_rule("/inventory/new",endpoint="inventory_new",
+                              view_func=lambda: "old sqlite handler",methods=["POST"])
+        self.app.add_url_rule("/transfer/<int:uid>",endpoint="transfer",
+                              view_func=lambda uid: "old sqlite handler",methods=["POST"])
+        self.app.add_url_rule("/repair/<int:uid>",endpoint="repair",
+                              view_func=lambda uid: "old sqlite handler",methods=["POST"])
+        self.app.add_url_rule("/repairs/<int:rid>/update",endpoint="repair_update",
+                              view_func=lambda rid: "old sqlite handler",methods=["POST"])
+        self.app.add_url_rule("/cores/<int:cid>",endpoint="core_detail",
+                              view_func=lambda cid: "old sqlite handler",methods=["POST"])
+        routes.install_staging_routes(
+            self.app,lambda s:s.upper(),
+            lambda s:("Active",s) if s == "A1" else ("Needs review",None),
+            amount)
+        self.client = self.app.test_client()
+
+    def test_non_staging_route_is_blocked(self):
+        self.assertEqual(self.client.get("/inventory/new").status_code,404)
+
+    def test_inventory_receiving_routes_to_postgres(self):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        with patch.object(routes,"connect",return_value=fake), \
+             patch.object(routes,"create_batch",return_value=4) as batch, \
+             patch.object(routes,"allocate_code",return_value="CC-102226-001") as allocate, \
+             patch.object(routes,"receive_unit",return_value=8) as receive:
+            response = self.client.post("/inventory/new",data={
+                "type[]":"CC","product[]":"GE Venue",
+                "cost[]":"100","manufacturer[]":"GE",
+            })
+        self.assertEqual(response.status_code,201)
+        self.assertEqual(response.json["received"],1)
+        self.assertIn("INSERT INTO activity_log",str(fake.execute.call_args_list))
+        batch.assert_called_once_with(fake,1)
+        allocate.assert_called_once_with(fake,"CC")
+        receive.assert_called_once()
+
+    def test_transfer_routes_to_postgres(self):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        with patch.object(routes,"connect",return_value=fake), \
+             patch.object(routes,"transfer_unit") as transfer:
+            response = self.client.post("/transfer/9",data={"location":"a1"})
+        self.assertEqual(response.status_code,200)
+        transfer.assert_called_once_with(fake,9,"A1","")
+
+    def test_repair_update_routes_to_postgres(self):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        with patch.object(routes,"connect",return_value=fake), \
+             patch.object(routes,"update_repair_stage",return_value=True) as update:
+            response = self.client.post("/repairs/11/update",data={"stage":"QC"})
+        self.assertEqual(response.status_code,200)
+        self.assertTrue(response.json["stage_changed"])
+        self.assertEqual(update.call_args.args[1:3],(11,"QC"))
+
+    def test_core_conversion_routes_to_postgres(self):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.execute.return_value.fetchone.return_value = {
+            "id":5,"stage":"Ready for Stock","qc_result":"Passed"}
+        with patch.object(routes,"connect",return_value=fake), \
+             patch.object(routes,"convert_core_to_stock",
+                          return_value=("CC-102226-002",150.0,21)) as convert:
+            response = self.client.post("/cores/5",data={"action":"convert"})
+        self.assertEqual(response.status_code,201)
+        self.assertEqual(response.json["unit_id"],21)
+        convert.assert_called_once()
+
+    def test_invalid_stage_rolls_back(self):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        with patch.object(routes,"connect",return_value=fake), \
+             patch.object(routes,"update_repair_stage",side_effect=ValueError("Invalid repair stage")):
+            response = self.client.post("/repairs/11/update",data={"stage":"INVALID"})
+        self.assertEqual(response.status_code,400)
+        self.assertEqual(response.data.decode(),"Invalid repair stage")
+
+class StagingSecurityDefaultsTest(unittest.TestCase):
+    def test_payload_limit_and_security_headers(self):
+        from staging_security_defaults import configure_staging_limits, apply_staging_headers
+        app = Flask(__name__)
+        configure_staging_limits(app)
+        app.after_request(apply_staging_headers)
+        from flask import request
+        app.add_url_rule("/upload",view_func=lambda: request.get_data() and "ok",methods=["POST"])
+        with app.test_client() as client:
+            ok = client.post("/upload",data="small")
+            self.assertEqual(ok.status_code,200)
+            self.assertEqual(ok.headers["X-Frame-Options"],"DENY")
+            self.assertEqual(ok.headers["X-Content-Type-Options"],"nosniff")
+            self.assertIn("geolocation=()",ok.headers["Permissions-Policy"])
+            too_large = client.post("/upload",data=b"x"*(10*1024*1024+1),
+                                    content_type="application/octet-stream")
+            self.assertEqual(too_large.status_code,413)
+
+class AttachmentValidationTest(unittest.TestCase):
+    def test_signatures_and_size(self):
+        from postgres_attachments import identify
+        self.assertEqual(identify(bytes.fromhex("ffd8ff") + b"test")[0],"image/jpeg")
+        self.assertEqual(identify(bytes.fromhex("89504e470d0a1a0a") + b"test")[0],"image/png")
+        self.assertEqual(identify(b"%PDF-1.7\\nexample\\n%%EOF")[0],"application/pdf")
+        for bad in (b"<svg></svg>",b"hello",b"%PDF-1.7",b"x"*(5*1024*1024+1)):
+            with self.assertRaises(ValueError):
+                identify(bad)
+
+class SecureCookieConfigurationTest(unittest.TestCase):
+    def test_secure_cookie_and_https_gate(self):
+        import os
+        from unittest.mock import patch
+        from flask import Flask
+        from postgres_employee_security import register_pg_security
+        with patch.dict(os.environ, {"CCM_REQUIRE_HTTPS":"1"}):
+            site=Flask(__name__)
+            site.secret_key="synthetic-https-test-secret"
+            register_pg_security(site,"postgresql://unused")
+            self.assertTrue(site.config["SESSION_COOKIE_SECURE"])
+            self.assertEqual(site.config["SESSION_COOKIE_SAMESITE"],"Lax")
+            with site.test_client() as client:
+                denied=client.get("/login",environ_overrides={"wsgi.url_scheme":"http"})
+                self.assertEqual(denied.status_code,403)
+                allowed=client.get("/login",environ_overrides={"wsgi.url_scheme":"https"})
+                self.assertEqual(allowed.status_code,200)
+                self.assertIn("max-age=31536000",allowed.headers["Strict-Transport-Security"])
+
+if __name__ == "__main__":
+    unittest.main()

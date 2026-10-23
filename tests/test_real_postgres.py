@@ -1,0 +1,502 @@
+"""Real PostgreSQL integration tests using disposable CI database only.
+
+The database must be empty. Requires CCM_TEST_DATABASE_URL. Never point at Render.
+"""
+import os
+import unittest
+from pathlib import Path
+import psycopg
+from psycopg.rows import dict_row
+from postgres_inventory_repairs import (
+ allocate_code,create_batch,receive_unit,receive_core,receive_customer_repair,
+ transfer_unit,record_unit_repair,update_repair_stage,convert_core_to_stock,
+)
+from postgres_staging_routes import STAGES
+
+URL=os.environ.get("CCM_TEST_DATABASE_URL")
+@unittest.skipUnless(URL,"CCM_TEST_DATABASE_URL not set")
+class RealPostgresTests(unittest.TestCase):
+ @classmethod
+ def setUpClass(cls):
+  cls.db=psycopg.connect(URL,row_factory=dict_row)
+  tables=cls.db.execute("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public'").fetchone()["n"]
+  if tables:
+   raise RuntimeError("Refusing to run integration tests against a nonempty schema")
+  cls.db.execute(Path("migration/staging_schema.sql").read_text())
+  cls.db.execute(Path("migration/product_schema.sql").read_text())
+  cls.db.commit()
+
+ @classmethod
+ def tearDownClass(cls):
+  cls.db.close()
+
+ def test_inventory_repairs_and_core_conversion(self):
+  db=self.db
+  row=dict(manufacturer="GE",product="Venue",serial="TEST-001",cost_value=100.,
+           notes="sample",location="A1",condition="Used",supplier="Synthetic",
+           received_date="2026-10-22",customer="Test",rma="TEST-RMA-1",
+           technician="Tester")
+  with db.transaction():
+   batch=create_batch(db,1)
+   cc=allocate_code(db,"CC")
+   uid=receive_unit(db,row,cc,batch,"VENUE")
+   self.assertEqual(db.execute("SELECT cost FROM units WHERE id=%s",(uid,)).fetchone()["cost"],100.)
+   transfer_unit(db,uid,"B2","move")
+   self.assertEqual(db.execute("SELECT physical_location FROM units WHERE id=%s",(uid,)).fetchone()["physical_location"],"B2")
+   rid=record_unit_repair(db,uid,"Inspection","test")
+   self.assertGreater(rid,0)
+   cr=allocate_code(db,"CR")
+   core_id=receive_core(db,row,cr)
+   db.execute("UPDATE core_items SET stage='Ready for Stock',qc_result='Passed' WHERE id=%s",(core_id,))
+   db.execute("""INSERT INTO core_transactions(core_id,performed_at,description,labor_cost,parts_cost,other_cost)
+                 VALUES (%s,'now','repair',10,5,0)""",(core_id,))
+   converted_code,total,new_uid=convert_core_to_stock(db,core_id,lambda x:x.upper())
+   self.assertEqual(total,115.)
+   self.assertNotEqual(new_uid,uid)
+   self.assertEqual(db.execute("SELECT converted_unit_id FROM core_items WHERE id=%s",(core_id,)).fetchone()["converted_unit_id"],new_uid)
+   rp=allocate_code(db,"RP")
+   repair_id=receive_customer_repair(db,row,rp)
+   changed=update_repair_stage(db,repair_id,"QC",STAGES,{"customer":"Test"},"moved")
+   self.assertTrue(changed)
+   self.assertEqual(db.execute("SELECT count(*) AS n FROM customer_repair_history WHERE repair_id=%s",(repair_id,)).fetchone()["n"],2)
+  self.assertEqual(db.execute("SELECT count(*) AS n FROM units").fetchone()["n"],2)
+
+ def test_product_catalog_compatibility_and_audit(self):
+  db=self.db
+  with db.transaction():
+   probe=db.execute("""INSERT INTO products(category,manufacturer,model,display_name)
+                      VALUES ('PRB','GE','L4-20','GE L4-20') RETURNING id""").fetchone()["id"]
+   system=db.execute("""INSERT INTO products(category,manufacturer,model,display_name)
+                       VALUES ('SYS','GE','Venue','GE Venue') RETURNING id""").fetchone()["id"]
+   db.execute("""INSERT INTO product_part_numbers(product_id,part_number)
+                 VALUES (%s,%s)""",(probe,"TEST-PART"))
+   db.execute("""INSERT INTO product_compatibility(probe_id,system_id)
+                 VALUES (%s,%s)""",(probe,system))
+   db.execute("""INSERT INTO product_audit(product_id,action,actor)
+                 VALUES (%s,'Test insert','Test runner')""",(probe,))
+   row=db.execute("""SELECT p.model,STRING_AGG(pn.part_number, ', ') AS parts
+                     FROM products p LEFT JOIN product_part_numbers pn ON pn.product_id=p.id
+                     WHERE p.id=%s GROUP BY p.id""",(probe,)).fetchone()
+   self.assertEqual(row["parts"],"TEST-PART")
+   self.assertEqual(db.execute("SELECT count(*) AS n FROM product_compatibility").fetchone()["n"],1)
+   self.assertEqual(db.execute("SELECT count(*) AS n FROM product_audit").fetchone()["n"],1)
+
+ def test_product_flask_routes_postgresql(self):
+  # Use the same isolated disposable PostgreSQL DB as the integration tests.
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  try:
+   from app import app
+   app.config["TESTING"]=True
+   with app.test_client() as client:
+    page=client.get("/products")
+    self.assertEqual(page.status_code,200,page.data[:300])
+    self.assertIn(b"Product Database",page.data)
+    response=client.post("/products/request",data={
+     "request_type":"New Product","category":"PRB",
+     "manufacturer":"GE","model":"TEST-REQUEST-PROBE",
+     "notes":"Synthetic test request"})
+    self.assertEqual(response.status_code,302)
+    self.assertEqual(self.db.execute("SELECT count(*) AS n FROM product_requests WHERE model='TEST-REQUEST-PROBE'").fetchone()["n"],1)
+    with client.session_transaction() as sess:
+     sess["product_admin"]=True
+    admin=client.get("/products/admin")
+    self.assertEqual(admin.status_code,200,admin.data[:300])
+    probe=self.db.execute("SELECT id FROM products WHERE model='L4-20'").fetchone()
+    if probe:
+     # The Flask route uses a separate connection; commit fixture rows first.
+     self.db.commit()
+     detail=client.get("/products/"+str(probe["id"]))
+     self.assertEqual(detail.status_code,200,detail.data[:300])
+  finally:
+   os.environ.pop("CCM_PG_STAGING",None)
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
+ def test_dashboard_and_reporting_flask_routes(self):
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  try:
+   from app import app
+   app.config["TESTING"]=True
+   with app.test_client() as client:
+    for path in ("/","/?view=All","/?q=Venue","/cores","/repairs",
+                 "/repairs?stage=QC","/repairs?q=TEST"):
+     response=client.get(path)
+     self.assertEqual(response.status_code,200,(path,response.data[:300]))
+    self.assertEqual(client.get("/unit/999999999").status_code,404)
+    self.assertEqual(client.get("/repairs/999999999").status_code,404)
+    uid=self.db.execute("SELECT id FROM units ORDER BY id LIMIT 1").fetchone()
+    if uid:
+     response=client.get("/unit/"+str(uid["id"]))
+     self.assertEqual(response.status_code,200,response.data[:300])
+    rid=self.db.execute("SELECT id FROM customer_repairs ORDER BY id LIMIT 1").fetchone()
+    if rid:
+     response=client.get("/repairs/"+str(rid["id"]))
+     self.assertEqual(response.status_code,200,response.data[:300])
+  finally:
+   os.environ.pop("CCM_PG_STAGING",None)
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
+ def test_pg_employee_security_roles_and_csrf(self):
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+      VALUES (%s,%s,'viewer') ON CONFLICT (LOWER(email)) DO UPDATE
+      SET password_hash=EXCLUDED.password_hash,role='viewer',active=TRUE""",
+      ("viewer@example.test",generate_password_hash("very-long-test-password")))
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+      VALUES (%s,%s,'employee') ON CONFLICT (LOWER(email)) DO UPDATE
+      SET password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+      ("worker@example.test",generate_password_hash("very-long-test-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="only-a-synthetic-ci-secret"
+  @site.get("/")
+  def index():
+   return "dashboard"
+  @site.post("/transfer/<int:uid>")
+  def transfer(uid):
+   return "changed"
+  register_pg_security(site,URL)
+  self.assertEqual(site.config["MAX_CONTENT_LENGTH"],10*1024*1024)
+  with site.test_client() as client:
+   self.assertEqual(client.get("/").status_code,302)
+   login=client.get("/login")
+   self.assertEqual(login.status_code,200)
+   self.assertEqual(login.headers["X-Frame-Options"],"DENY")
+   self.assertIn("geolocation=()",login.headers["Permissions-Policy"])
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"email":"viewer@example.test",
+       "password":"very-long-test-password"}).status_code,403)
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+       "email":"viewer@example.test","password":"very-long-test-password"}).status_code,302)
+   self.assertEqual(client.get("/").status_code,200)
+   self.assertEqual(client.get("/products/admin").status_code,403)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,403)
+   self.assertEqual(client.post("/logout",data={}).status_code,403)
+   self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
+   self.assertEqual(client.get("/").status_code,302)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+       "email":"worker@example.test","password":"very-long-test-password"}).status_code,302)
+   self.assertEqual(client.post("/transfer/1",data={}).status_code,403)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,200)
+   self.assertEqual(client.get("/products/admin").status_code,403)
+   self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
+   # Repeated invalid passwords are blocked by shared PostgreSQL state.
+   self.assertEqual(client.get("/login").status_code,200)
+   for _ in range(5):
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    self.assertEqual(client.post("/login",data={"_csrf_token":token,
+        "email":"blocked@example.test","password":"invalid"}).status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+       "email":"blocked@example.test","password":"invalid"}).status_code,429)
+
+ def test_security_allowlist_covers_all_write_routes(self):
+  # Fail CI if a new mutating Flask endpoint is added without a role decision.
+  from postgres_employee_security import WRITE_ROLES
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  try:
+   from app import app
+   missing=[]
+   for rule in app.url_map.iter_rules():
+    if "POST" in rule.methods and rule.endpoint not in (
+       "pg_employee_login","pg_employee_logout") and rule.endpoint not in WRITE_ROLES:
+     missing.append((rule.rule,rule.endpoint))
+   self.assertEqual(missing,[],"Unreviewed POST endpoints: "+str(missing))
+  finally:
+   os.environ.pop("CCM_PG_STAGING",None)
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
+
+ def test_postgresql_staging_http_workflows(self):
+  os.environ["CCM_PG_STAGING"]="1"
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  from app import app
+  from postgres_staging_routes import receive, transfer, repair, update, core
+  os.environ["CCM_STAGING_DATABASE_URL"]=URL
+  app.config["TESTING"]=True
+  try:
+   with app.test_client() as client:
+    form={"type[]":["CC","CR","RP"],"manufacturer[]":["GE"]*3,
+      "product[]":["Venue","Probe","Venue"],"serial[]":["HTTP-1","HTTP-2","HTTP-3"],
+      "location[]":["A1"]*3,"supplier[]":["Test"]*3,"cost[]":["100","40","0"],
+      "customer[]":["","","Test Hospital"],"rma[]":["","","HTTP-RMA-1"]}
+    response=client.post("/inventory/new",data=form)
+    self.assertEqual(response.status_code,201,response.data[:300])
+    cc,cr,rp=response.json["inventory_codes"]
+    uid=self.db.execute("SELECT id FROM units WHERE inventory_code=%s",(cc,)).fetchone()["id"]
+    cid=self.db.execute("SELECT id FROM core_items WHERE inventory_code=%s",(cr,)).fetchone()["id"]
+    rid=self.db.execute("SELECT id FROM customer_repairs WHERE inventory_code=%s",(rp,)).fetchone()["id"]
+    self.assertEqual(client.post("/transfer/"+str(uid),data={"location":"B2"}).status_code,200)
+    self.assertEqual(client.post("/repair/"+str(uid),data={"type":"Inspection"}).status_code,201)
+    self.assertEqual(client.post("/repairs/"+str(rid)+"/update",data={"stage":"QC"}).status_code,200)
+    details=self.db.execute("SELECT customer,model,serial FROM customer_repairs WHERE id=%s",(rid,)).fetchone()
+    self.assertEqual(details["customer"],"Test Hospital")
+    self.assertEqual(details["model"],"Venue")
+    self.assertEqual(details["serial"],"HTTP-3")
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"convert"}).status_code,400)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"stage","stage":"QC"}).status_code,200)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"qc","result":"Passed"}).status_code,400)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"transaction",
+      "description":"Repair","labor_method":"hourly","hours":"2","rate":"15",
+      "parts":"5","other":"2"}).status_code,201)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"qc",
+      "result":"Passed","technician":"Test"}).status_code,200)
+    result=client.post("/cores/"+str(cid),data={"action":"convert"})
+    self.assertEqual(result.status_code,201,result.data[:300])
+    self.assertEqual(result.json["cost"],77.)
+    self.assertEqual(client.post("/cores/"+str(cid),data={"action":"convert"}).status_code,400)
+    actions=[row["action"] for row in self.db.execute("SELECT action FROM activity_log ORDER BY id").fetchall()]
+    for action in ("receive","transfer","repair_created","repair_updated","core_stage","core_transaction","core_qc","core_converted"):
+     self.assertIn(action,actions)
+    self.assertEqual(actions.count("core_converted"),1)
+  finally:
+   os.environ.pop("CCM_PG_STAGING",None)
+   os.environ.pop("CCM_STAGING_DATABASE_URL",None)
+
+ def test_z_attachment_upload_access_and_download(self):
+  import io
+  import tempfile
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  from postgres_attachments import register_attachment_routes
+  with tempfile.TemporaryDirectory() as private:
+   os.environ["CCM_PRIVATE_UPLOAD_DIR"]=private
+   try:
+    self.db.execute(Path("migration/employee_schema.sql").read_text())
+    self.db.execute("""INSERT INTO employee_users(email,password_hash,role) VALUES (%s,%s,'employee')
+      ON CONFLICT (LOWER(email)) DO UPDATE SET password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+      ("attachment-worker@example.test",generate_password_hash("long-synthetic-password")))
+    rid=self.db.execute("""INSERT INTO customer_repairs(rma,customer,received_date,stage_started_at,created_at,updated_at)
+      VALUES ('ATTACHMENT-RMA-1','Synthetic','2026-10-22','now','now','now') RETURNING id""").fetchone()["id"]
+    self.db.commit()
+    site=Flask(__name__)
+    site.secret_key="synthetic-attachment-secret"
+    @site.get("/")
+    def index():
+     return "ok"
+    register_pg_security(site,URL)
+    register_attachment_routes(site,URL)
+    with site.test_client() as client:
+     self.assertEqual(client.get("/repairs/"+str(rid)+"/attachments/1").status_code,302)
+     client.get("/login")
+     with client.session_transaction() as sess:
+      token=sess["_csrf_token"]
+     response=client.post("/login",data={"_csrf_token":token,"email":"attachment-worker@example.test","password":"long-synthetic-password"})
+     self.assertEqual(response.status_code,302)
+     with client.session_transaction() as sess:
+      self.assertIsInstance(sess["last_seen"],int)
+     with client.session_transaction() as sess:
+      token=sess["_csrf_token"]
+     endpoint="/repairs/"+str(rid)+"/attachments"
+     self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO(b"<svg/>"),"bad.png"),"_csrf_token":token}).status_code,400)
+     self.assertEqual(client.post(endpoint,data={"file":(io.BytesIO((bytes.fromhex("ffd8ff")+b"sample")),"photo.jpg")}).status_code,403)
+     uploaded=client.post(endpoint,data={"file":(io.BytesIO((bytes.fromhex("ffd8ff")+b"sample")),"photo.jpg"),"_csrf_token":token})
+     self.assertEqual(uploaded.status_code,201,uploaded.data[:300])
+     aid=uploaded.json["attachment_id"]
+     log=self.db.execute("SELECT employee_id,entity_id FROM activity_log WHERE action=%s ORDER BY id DESC LIMIT 1",("attachment_uploaded",)).fetchone()
+     self.assertIsNotNone(log["employee_id"])
+     self.assertEqual(log["entity_id"],str(rid))
+     downloaded=client.get(endpoint+"/"+str(aid))
+     self.assertEqual(downloaded.status_code,200)
+     self.assertEqual(downloaded.data,(bytes.fromhex("ffd8ff")+b"sample"))
+     self.assertEqual(client.get(endpoint+"/999999999").status_code,404)
+   finally:
+    os.environ.pop("CCM_PRIVATE_UPLOAD_DIR",None)
+
+ def test_login_ip_throttle(self):
+  from flask import Flask
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-rate-limit-secret"
+  @site.get("/")
+  def index():
+   return "ok"
+  register_pg_security(site,URL)
+  with site.test_client() as client:
+   client.get("/login")
+   for n in range(20):
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    result=client.post("/login",data={"_csrf_token":token,"email":"ip-probe-%s@example.test"%n,"password":"invalid"},environ_overrides={"REMOTE_ADDR":"192.0.2.19"})
+    self.assertEqual(result.status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   result=client.post("/login",data={"_csrf_token":token,"email":"another@example.test","password":"invalid"},environ_overrides={"REMOTE_ADDR":"192.0.2.19"})
+   self.assertEqual(result.status_code,429)
+
+ def test_security_session_expiration_and_deactivation(self):
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+     VALUES (%s,%s,'employee') ON CONFLICT (LOWER(email)) DO UPDATE SET
+     password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+     ("session-check@example.test",generate_password_hash("synthetic-strong-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-session-test-key"
+  @site.get("/")
+  def index():
+   return "ok"
+  register_pg_security(site,URL)
+  with site.test_client() as client:
+   client.get("/login")
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   response=client.post("/login",data={"_csrf_token":token,
+     "email":"session-check@example.test","password":"synthetic-strong-password"})
+   self.assertEqual(response.status_code,302)
+   self.assertEqual(client.get("/").status_code,200)
+   with client.session_transaction() as sess:
+    sess["last_seen"]=1
+   self.assertEqual(client.get("/").status_code,302)
+   with client.session_transaction() as sess:
+    self.assertNotIn("employee_id",sess)
+   client.get("/login")
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+     "email":"session-check@example.test","password":"synthetic-strong-password"}).status_code,302)
+   self.db.execute("UPDATE employee_users SET active=FALSE WHERE email=%s",("session-check@example.test",))
+   self.db.commit()
+   self.assertEqual(client.get("/").status_code,302)
+   with client.session_transaction() as sess:
+    self.assertNotIn("employee_id",sess)
+
+ def test_audit_rollback_is_atomic(self):
+  from postgres_activity_log import audit
+  before=self.db.execute("SELECT count(*) AS n FROM activity_log").fetchone()["n"]
+  try:
+   with self.db.transaction():
+    audit(self.db,"transfer","unit","synthetic-rollback")
+    raise ValueError("simulate rolled-back transfer")
+  except ValueError:
+   pass
+  after=self.db.execute("SELECT count(*) AS n FROM activity_log").fetchone()["n"]
+  self.assertEqual(after,before)
+
+ def test_admin_role_and_unknown_write_denied(self):
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+    VALUES (%s,%s,'admin') ON CONFLICT (LOWER(email)) DO UPDATE SET
+    password_hash=EXCLUDED.password_hash,role='admin',active=TRUE""",
+    ("admin-check@example.test",generate_password_hash("synthetic-admin-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-admin-test-key"
+  @site.get("/")
+  def index():
+   return "ok"
+  @site.get("/products/admin")
+  def product_admin_view():
+   return "admin"
+  @site.post("/unreviewed-write")
+  def unreviewed_write():
+   return "should not execute"
+  @site.post("/transfer/1",endpoint="transfer")
+  def transfer():
+   return "ok"
+  register_pg_security(site,URL)
+  with site.test_client() as client:
+   client.get("/login")
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/login",data={"_csrf_token":token,
+    "email":"admin-check@example.test","password":"synthetic-admin-password"}).status_code,302)
+   self.assertEqual(client.get("/products/admin").status_code,200)
+   with client.session_transaction() as sess:
+    token=sess["_csrf_token"]
+   self.assertEqual(client.post("/transfer/1",data={}).status_code,403)
+   self.assertEqual(client.post("/transfer/1",data={"_csrf_token":token}).status_code,200)
+   self.assertEqual(client.post("/unreviewed-write",data={"_csrf_token":token}).status_code,403)
+
+ def test_private_preview_authenticated_inventory_workflow(self):
+  """Synthetic receiving and transfer through employee-authenticated staging."""
+  from flask import Flask
+  from werkzeug.security import generate_password_hash
+  from postgres_employee_security import register_pg_security
+  from postgres_staging_routes import install_staging_routes
+  self.db.execute(Path("migration/employee_schema.sql").read_text())
+  self.db.execute("""INSERT INTO employee_users(email,password_hash,role)
+    VALUES (%s,%s,'employee') ON CONFLICT (LOWER(email)) DO UPDATE SET
+    password_hash=EXCLUDED.password_hash,role='employee',active=TRUE""",
+    ("preview-worker@example.test",generate_password_hash("synthetic-preview-password")))
+  self.db.commit()
+  site=Flask(__name__)
+  site.secret_key="synthetic-private-preview-secret"
+  @site.get("/")
+  def index():
+   return "private preview"
+  @site.post("/inventory/new",endpoint="inventory_new")
+  def inventory_new():
+   return "sqlite fallback must not execute"
+  @site.post("/transfer/<int:uid>",endpoint="transfer")
+  def transfer(uid):
+   return "sqlite fallback must not execute"
+  register_pg_security(site,URL)
+  install_staging_routes(site,lambda s:s.upper(),lambda s:("Active",s),lambda value,label:float(value or 0))
+  from unittest.mock import patch
+  import postgres_staging_routes
+  with patch.dict(os.environ,{"CCM_STAGING_DATABASE_URL":URL}):
+   with site.test_client() as client:
+    self.assertEqual(client.get("/").status_code,302)
+    self.assertEqual(client.post("/inventory/new",data={}).status_code,302)
+    client.get("/login")
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    self.assertEqual(client.post("/login",data={"_csrf_token":token,
+      "email":"preview-worker@example.test","password":"synthetic-preview-password"}).status_code,302)
+    with client.session_transaction() as sess:
+     token=sess["_csrf_token"]
+    self.assertEqual(client.post("/inventory/new",data={"type[]":"CC","product[]":"Synthetic Preview Probe",
+      "manufacturer[]":"GE","serial[]":"PREVIEW-TEST-ONLY","location[]":"A1","cost[]":"25"}).status_code,403)
+    received=client.post("/inventory/new",data={"_csrf_token":token,"type[]":"CC",
+      "product[]":"Synthetic Preview Probe","manufacturer[]":"GE",
+      "serial[]":"PREVIEW-TEST-ONLY","location[]":"A1","cost[]":"25"})
+    self.assertEqual(received.status_code,201,received.data[:300])
+    code=received.json["inventory_codes"][0]
+    row=self.db.execute("SELECT id FROM units WHERE inventory_code=%s",(code,)).fetchone()
+    self.assertIsNotNone(row)
+    moved=client.post("/transfer/"+str(row["id"]),data={"_csrf_token":token,"location":"B2"})
+    self.assertEqual(moved.status_code,200,moved.data[:300])
+    events=self.db.execute("SELECT action,employee_id FROM activity_log WHERE entity_id IN (%s,%s)",
+      (code,str(row["id"]))).fetchall()
+    self.assertTrue(any(x["action"]=="receive" and x["employee_id"] is not None for x in events))
+    self.assertTrue(any(x["action"]=="transfer" and x["employee_id"] is not None for x in events))
+    self.assertEqual(client.post("/logout",data={"_csrf_token":token}).status_code,302)
+    self.assertEqual(client.get("/").status_code,302)
+
+ def test_rollback(self):
+  db=self.db
+  before=db.execute("SELECT count(*) AS n FROM units").fetchone()["n"]
+  try:
+   with db.transaction():
+    db.execute("INSERT INTO units(product_raw) VALUES ('ROLLBACK TEST')")
+    raise ValueError("simulate failed receiving")
+  except ValueError:
+   pass
+  self.assertEqual(db.execute("SELECT count(*) AS n FROM units").fetchone()["n"],before)
+
+if __name__=="__main__":
+ unittest.main()

@@ -5,7 +5,21 @@ from flask import Flask,request,render_template_string,redirect,url_for,flash,se
 from openpyxl import load_workbook
 BASE=Path(__file__).resolve().parent
 DB=BASE/'inventory.db'
-app=Flask(__name__);app.secret_key=os.environ.get('CCM_SECRET','local-prototype-only')
+app=Flask(__name__)
+# Never expose the local prototype to the internet without explicit secure mode.
+app.secret_key=os.environ.get('CCM_SECRET','local-prototype-only')
+app.config.update(
+ SESSION_COOKIE_HTTPONLY=True,
+ SESSION_COOKIE_SAMESITE='Lax',
+ SESSION_COOKIE_SECURE=os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1',
+)
+if os.environ.get('RENDER'):
+ raise RuntimeError('Deployment blocked until PostgreSQL migration, role authorization and CSRF protection are complete.')
+if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1' and (
+ not os.environ.get('CCM_SECRET') or os.environ.get('CCM_SECRET')=='local-prototype-only'
+):
+ raise RuntimeError('A unique CCM_SECRET is required for employee authentication.')
+
 SCHEMA='''CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY,source_sheet TEXT,source_row INTEGER,manufacturer TEXT,product_raw TEXT,product_key TEXT,serial TEXT,cost REAL,dom TEXT,notes TEXT,location_raw TEXT,physical_location TEXT,status TEXT,condition TEXT,review TEXT, UNIQUE(source_sheet,source_row)); CREATE TABLE IF NOT EXISTS movements(id INTEGER PRIMARY KEY,unit_id INTEGER,old_location TEXT,new_location TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,note TEXT); CREATE TABLE IF NOT EXISTS repair_orders(id INTEGER PRIMARY KEY,unit_id INTEGER,repair_type TEXT,status TEXT DEFAULT 'Open',notes TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS integration_links(id INTEGER PRIMARY KEY,unit_id INTEGER,system TEXT,external_id TEXT,sync_state TEXT DEFAULT 'not_synced');'''
 def conn():
  c=sqlite3.connect(DB);c.row_factory=sqlite3.Row;return c
@@ -299,8 +313,58 @@ def repair(uid):
  c=conn();u=c.execute('SELECT status FROM units WHERE id=?',(uid,)).fetchone()
  if not u or u['status']=='Sold archive':c.close();return 'Sold records cannot receive new repairs in this prototype',400
  c.execute('INSERT INTO repair_orders(unit_id,repair_type,notes) VALUES (?,?,?)',(uid,request.form.get('type'),request.form.get('notes')));c.commit();c.close();flash('Repair record created');return redirect(url_for('unit',uid=uid))
+# Opt-in local employee security test. The Render deployment remains blocked
+# until PostgreSQL migration and write-route security reviews are complete.
+if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1':
+ from employee_auth import register_employee_auth
+ register_employee_auth(app,conn)
+
+# Optional Cloudflare Access JWT gate. Register before employee auth so even
+# direct Render-origin requests must prove an approved Cloudflare identity.
+# This does not remove the Render deployment block above.
+if os.environ.get('CCM_CF_ACCESS_REQUIRED')=='1':
+ if os.environ.get('CCM_PG_SECURE')!='1':
+  raise RuntimeError('Cloudflare pilot requires secure PostgreSQL employee login')
+ from cloudflare_access_gate import register_cloudflare_access_gate
+ register_cloudflare_access_gate(app)
+
+# Optional secured PostgreSQL staging. Install before the dispatch bridge.
+# This does not lift the Render deployment guard.
+if os.environ.get('CCM_PG_SECURE')=='1':
+ if os.environ.get('CCM_PG_STAGING')!='1':
+  raise RuntimeError('CCM_PG_SECURE requires CCM_PG_STAGING=1')
+ if not os.environ.get('CCM_SECRET') or os.environ['CCM_SECRET']=='local-prototype-only':
+  raise RuntimeError('A strong CCM_SECRET is required for secure staging')
+ from postgres_employee_security import register_pg_security
+ register_pg_security(app,os.environ['CCM_STAGING_DATABASE_URL'])
+ from postgres_attachments import register_attachment_routes
+ register_attachment_routes(app,os.environ['CCM_STAGING_DATABASE_URL'])
+
+# Local-only PostgreSQL staging dispatch. Existing SQLite paths stay unchanged.
+# Render startup is intentionally blocked above until security is complete.
+if os.environ.get('CCM_PG_STAGING')=='1':
+ if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1':
+  raise RuntimeError('PostgreSQL staging bridge is incompatible with SQLite employee auth')
+ if not os.environ.get('CCM_STAGING_DATABASE_URL'):
+  raise RuntimeError('CCM_STAGING_DATABASE_URL is required for PostgreSQL staging')
+ from postgres_staging_routes import install_staging_routes
+ install_staging_routes(app,norm,classify,amount)
+
 from product_database import register_product_routes
-register_product_routes(app,conn,BASE)
+# PostgreSQL read-only dashboard and reporting routes for local staging.
+if os.environ.get('CCM_PG_STAGING')=='1':
+ from postgres_dashboard import install_dashboard_routes
+ install_dashboard_routes(app,os.environ['CCM_STAGING_DATABASE_URL'],
+                          TEMPLATE,CORE_TEMPLATE,REPAIR_TEMPLATE,
+                          REPAIR_STAGES,repair_context)
+
+if os.environ.get('CCM_PG_STAGING')=='1':
+ from postgres_backend import PGConnection
+ def product_pg_conn():
+  return PGConnection(os.environ['CCM_STAGING_DATABASE_URL'],strict_inserts=False)
+ register_product_routes(app,product_pg_conn,BASE,postgres=True)
+else:
+ register_product_routes(app,conn,BASE)
 
 if __name__=='__main__':
  if len(sys.argv)>1 and sys.argv[1]=='import':
