@@ -319,6 +319,15 @@ if os.environ.get('CCM_ENABLE_EMPLOYEE_AUTH')=='1':
  from employee_auth import register_employee_auth
  register_employee_auth(app,conn)
 
+# Optional Cloudflare Access JWT gate. Register before employee auth so even
+# direct Render-origin requests must prove an approved Cloudflare identity.
+# This does not remove the Render deployment block above.
+if os.environ.get('CCM_CF_ACCESS_REQUIRED')=='1':
+ if os.environ.get('CCM_PG_SECURE')!='1':
+  raise RuntimeError('Cloudflare pilot requires secure PostgreSQL employee login')
+ from cloudflare_access_gate import register_cloudflare_access_gate
+ register_cloudflare_access_gate(app)
+
 # Optional secured PostgreSQL staging. Install before the dispatch bridge.
 # This does not lift the Render deployment guard.
 if os.environ.get('CCM_PG_SECURE')=='1':
