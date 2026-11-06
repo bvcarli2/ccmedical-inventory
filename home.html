@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>CC Medical | Home</title>
+    <style>
+      :root {
+        --navy: #112a42;
+        --blue: #245d86;
+        --bg: #f3f6fa;
+        --ink: #182b3c;
+        --muted: #697b8d;
+        --line: #dfe7ef
+      }
+      * {
+        box-sizing: border-box
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.5 system-ui, Segoe UI, Arial
+      }
+      a {
+        color: #21628b;
+        text-decoration: none
+      }
+      a:hover {
+        text-decoration: underline
+      }
+      .shell {
+        display: flex;
+        min-height: 100vh
+      }
+      .sidebar {
+        width: 232px;
+        flex: none;
+        background: var(--navy);
+        padding: 24px 14px;
+        color: #fff
+      }
+      .brand {
+        font-size: 21px;
+        font-weight: 750;
+        padding: 5px 13px 23px
+      }
+      .brand small {
+        display: block;
+        font-size: 11px;
+        font-weight: 400;
+        letter-spacing: 1px;
+        color: #a5b9cd;
+        text-transform: uppercase
+      }
+      .label {
+        padding: 12px 13px;
+        color: #91a9be;
+        font-size: 11px;
+        letter-spacing: 1px;
+        text-transform: uppercase
+      }
+      .nav {
+        display: block;
+        color: #dce9f4;
+        padding: 11px 13px;
+        border-radius: 9px
+      }
+      .nav.active {
+        background: #2b5f88;
+        color: white;
+        font-weight: 700
+      }
+      .nav:hover {
+        background: #203d56;
+        text-decoration: none
+      }
+      .main {
+        flex: 1;
+        min-width: 0
+      }
+      .top {
+        height: 65px;
+        background: white;
+        border-bottom: 1px solid var(--line);
+        padding: 20px 32px;
+        font-weight: 650
+      }
+      .content {
+        padding: 28px 32px;
+        max-width: 1500px;
+        margin: auto
+      }
+      .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 22px;
+        flex-wrap: wrap
+      }
+      h1 {
+        font-size: 27px;
+        margin: 0
+      }
+      h2 {
+        font-size: 17px;
+        margin: 0 0 14px
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 12px
+      }
+      .btn,
+      button {
+        background: var(--blue);
+        color: white;
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 15px;
+        cursor: pointer;
+        font: inherit
+      }
+      .btn:hover {
+        color: white;
+        text-decoration: none
+      }
+      .btn.secondary {
+        background: #e7f0f6;
+        color: #245d86
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 13px;
+        margin-bottom: 22px
+      }
+      .card,
+      .panel {
+        background: white;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 19px
+      }
+      .card {
+        display: block;
+        color: var(--ink)
+      }
+      .card:hover {
+        border-color: #82b1d2;
+        text-decoration: none
+      }
+      .card strong {
+        display: block;
+        font-size: 29px
+      }
+      .card span {
+        font-weight: 600
+      }
+      .panel {
+        margin-bottom: 20px
+      }
+      .toolbar {
+        display: flex;
+        gap: 9px;
+        flex-wrap: wrap;
+        margin-bottom: 16px
+      }
+      input,
+      select,
+      textarea {
+        padding: 10px 11px;
+        border: 1px solid #cdd9e4;
+        border-radius: 8px;
+        font: inherit;
+        max-width: 100%;
+        width: 100%
+      }
+      .toolbar input {
+        flex: 1;
+        min-width: 230px
+      }
+      .tablewrap {
+        overflow: auto
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        min-width: 850px
+      }
+      th,
+      td {
+        border-bottom: 1px solid #eaf0f5;
+        padding: 11px;
+        text-align: left;
+        font-size: 12px
+      }
+      th {
+        background: #f7f9fc;
+        color: #667a8e;
+        text-transform: uppercase;
+        font-size: 11px
+      }
+      .pill {
+        display: inline-block;
+        border-radius: 20px;
+        padding: 4px 9px;
+        background: #edf3f8;
+        color: #3d5c76;
+        white-space: nowrap
+      }
+      .pill.yellow {
+        background: #fff0bc;
+        color: #795500
+      }
+      .pill.red {
+        background: #ffe0df;
+        color: #a42c28
+      }
+      .pill.complete {
+        background: #dcf3e6;
+        color: #236947
+      }
+      .fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px
+      }
+      .field label {
+        display: block;
+        font-weight: 600;
+        font-size: 12px;
+        margin-bottom: 5px
+      }
+      .wide {
+        grid-column: 1/-1
+      }
+      .notice {
+        background: #fff6e5;
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 16px
+      }
+      .actions {
+        display: flex;
+        gap: 9px;
+        flex-wrap: wrap;
+        margin-top: 18px
+      }
+      .foot {
+        color: #7c8d9e;
+        font-size: 11px;
+        margin-top: 20px
+      }
+      @media(max-width:800px) {
+        .shell {
+          display: block
+        }
+        .sidebar {
+          width: 100%
+        }
+        .nav {
+          display: inline-block
+        }
+        .top {
+          height: auto;
+          padding: 12px
+        }
+        .content {
+          padding: 18px
+        }
+        .grid {
+          grid-template-columns: repeat(2, 1fr)
+        }
+        .fields {
+          grid-template-columns: 1fr
+        }
+        .wide {
+          grid-column: auto
+        }
+      }
+      .notice.warn {
+        background: #fff4dc;
+        border: 1px solid #f0d49b
+      }
+      .snbox {
+        background: #fff4dc;
+        border: 1px solid #f0d49b;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 12px 0
+      }
+      .snbox ul {
+        margin: 6px 0 0;
+        padding-left: 18px
+      }
+      /* ---- v1.05: repair tickets ---- */
+      .guide {
+        background: #f4f6f9;
+        border: 1px solid #e1e7ee;
+        border-left: 4px solid #9aabbb;
+        border-radius: 8px;
+        padding: 12px 14px;
+        color: #5d6f80;
+        margin-bottom: 20px
+      }
+      .guide strong {
+        color: #3f5263
+      }
+      .hint {
+        color: #8696a5;
+        font-size: 12px;
+        margin-top: 4px
+      }
+      ::placeholder {
+        color: #a3b0bc
+      }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 14px
+      }
+      .tabs a {
+        padding: 8px 13px;
+        border-radius: 8px;
+        background: #e9eff5;
+        color: #3d5c76;
+        font-weight: 600;
+        font-size: 13px
+      }
+      .tabs a.on {
+        background: var(--blue);
+        color: white
+      }
+      .tabs a span {
+        opacity: .75;
+        font-weight: 400;
+        margin-left: 4px
+      }
+      .stagecards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 10px;
+        margin-bottom: 20px
+      }
+      .stagecards a {
+        background: white;
+        border: 1px solid var(--line);
+        border-top: 4px solid #c9d5e0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        color: var(--ink)
+      }
+      .stagecards a:hover {
+        border-color: #82b1d2;
+        text-decoration: none
+      }
+      .stagecards a.on {
+        border-color: var(--blue)
+      }
+      .stagecards strong {
+        display: block;
+        font-size: 22px
+      }
+      .stagecards span {
+        font-size: 12px;
+        font-weight: 600
+      }
+      .stagecards small {
+        display: block;
+        color: var(--muted);
+        font-size: 11px
+      }
+      .team-Repair-team {
+        border-top-color: #5b8fd6 !important
+      }
+      .team-Sales {
+        border-top-color: #e2875a !important
+      }
+      .team-Shipping {
+        border-top-color: #3aa77f !important
+      }
+      .team-Admin {
+        border-top-color: #2d4a73 !important
+      }
+      .tablewrap td:nth-child(-n+2) {
+        white-space: nowrap
+      }
+      .pill.hold {
+        background: #eef0f3;
+        color: #6b7785
+      }
+      .pill.closed {
+        background: #dcf3e6;
+        color: #236947
+      }
+      .pill.team {
+        background: #f3f0ea;
+        color: #6a5a3d
+      }
+      .filters {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr auto;
+        gap: 9px;
+        align-items: end;
+        margin-bottom: 16px
+      }
+      .filters label {
+        display: block;
+        font-weight: 600;
+        font-size: 12px;
+        margin-bottom: 4px
+      }
+      .moves {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center
+      }
+      .moves button {
+        margin: 0
+      }
+      .twocol {
+        display: grid;
+        grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+        gap: 20px;
+        align-items: start
+      }
+      .log {
+        list-style: none;
+        margin: 0;
+        padding: 0
+      }
+      .log li {
+        border-bottom: 1px solid #eef2f6;
+        padding: 9px 0
+      }
+      .log .when {
+        color: var(--muted);
+        font-size: 12px
+      }
+      .log .kind {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        color: #8696a5;
+        margin-right: 6px
+      }
+      .log .text p,
+      .log .text ol,
+      .log .text ul {
+        margin: 2px 0
+      }
+      .section-title {
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .6px;
+        color: #8696a5;
+        margin: 18px 0 10px;
+        grid-column: 1/-1
+      }
+      .checkline {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-weight: 600;
+        font-size: 13px
+      }
+      .checkline input {
+        width: auto
+      }
+      @media(max-width:900px) {
+        .twocol,
+        .filters {
+          grid-template-columns: 1fr
+        }
+      }
+      /* ---- v1.09: home page ---- */
+      .hero {
+        text-align: center;
+        padding: 26px 0 30px
+      }
+      .hero h1 {
+        font-size: 30px;
+        margin-bottom: 6px
+      }
+      .bigsearch {
+        position: relative;
+        max-width: 720px;
+        margin: 18px auto 0
+      }
+      .bigsearch input {
+        width: 100%;
+        font-size: 18px;
+        padding: 16px 20px;
+        border-radius: 14px;
+        border: 1px solid #c4d3e0;
+        box-shadow: 0 6px 20px rgba(17, 42, 66, .08)
+      }
+      .bigsearch .gs-list {
+        display: none;
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 62px;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, .18);
+        z-index: 40;
+        overflow: hidden;
+        text-align: left
+      }
+      .bigsearch .gs-list a {
+        display: block;
+        padding: 10px 16px;
+        color: #182b3c;
+        border-bottom: 1px solid #eef2f6
+      }
+      .bigsearch .gs-list a:hover,
+      .bigsearch .gs-list a.on {
+        background: #eaf2f9;
+        text-decoration: none
+      }
+      .bigsearch .gs-kind {
+        display: block;
+        font-size: 10px;
+        letter-spacing: .5px;
+        text-transform: uppercase;
+        color: #7a8a99
+      }
+      .bigsearch .gs-sub {
+        display: block;
+        font-size: 12px;
+        color: #667a8e
+      }
+      .quick {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-top: 16px
+      }
+      .quick a {
+        background: #e7f0f6;
+        color: #245d86;
+        border-radius: 999px;
+        padding: 7px 14px;
+        font-weight: 600;
+        font-size: 13px
+      }
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+        gap: 12px;
+        margin-bottom: 22px
+      }
+      .tile {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-left: 5px solid #5b8fd6;
+        border-radius: 12px;
+        padding: 14px 16px;
+        color: var(--ink)
+      }
+      .tile:hover {
+        border-color: #82b1d2;
+        text-decoration: none
+      }
+      .tile strong {
+        display: block;
+        font-size: 28px
+      }
+      .tile span {
+        font-weight: 600
+      }
+      .tile small {
+        display: block;
+        color: var(--muted);
+        font-size: 11px
+      }
+      .tile.red {
+        border-left-color: #c0392b
+      }
+      .tile.green {
+        border-left-color: #3aa77f
+      }
+      .pagelist {
+        list-style: none;
+        margin: 0;
+        padding: 0
+      }
+      .pagelist li {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        border-bottom: 1px solid #eef2f6;
+        padding: 9px 0
+      }
+      .pagelist .kind {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: .5px
+      }
+      .pagelist form button {
+        background: none;
+        color: #8696a5;
+        padding: 2px 6px;
+        margin: 0;
+        font-size: 13px
+      }
+      .pagelists {
+        grid-template-columns: 1fr 1fr
+      }
+      @media(max-width:700px) {
+        .pagelists {
+          grid-template-columns: 1fr
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a href="/" class="brandlink"><div class="brand">CC Medical<small>Inventory Workspace</small></div></a>
+        <!--search-->
+        <div class="label">Inventory</div>
+        <a class="nav active" href="/">Home</a>
+        {% if can('receive') %}
+          <a class="nav" href="/inventory/new">+ New Inventory</a>
+        {% endif %}
+        {% if can('client_view') %}
+          <a class="nav" href="/clients">Clients</a>
+        {% endif %}
+        <a class="nav" href="/products">Product Database</a>
+        <a class="nav" href="/cores">Core Repairs (CR)</a>
+        <a class="nav" href="/repairs">Customer Repairs</a>
+        <a class="nav" href="/inventory?view=Active">Active Inventory</a>
+        <a class="nav" href="/inventory?view=All">All Records</a>
+      </aside>
+      <div class="main">
+        <header class="top">Home</header>
+        <main class="content">
+          {% with messages=get_flashed_messages() %}
+            {% for m in messages %}
+              <div class="notice {% if m.startswith('⚠') %}warn{% endif %}">{{m}}</div>
+            {% endfor %}
+          {% endwith %}
+
+          <div class="hero">
+            <h1>Hi {{g.user.full_name or g.user.username}}, what are you looking for?</h1>
+            <div class="muted">Clients, repair tickets, RMAs, serial numbers, stock and cores</div>
+            <form class="bigsearch gsearch-home" action="/search" method="get" autocomplete="off">
+              <input name="q" type="search" autofocus aria-label="Search everything"
+                placeholder="Type a client, ticket, RMA or serial number…"
+                oninput="gsSuggest(this)" onkeydown="gsKey(event, this)" onblur="setTimeout(function () { gsHide() }, 200)">
+              <div class="gs-list"></div>
+            </form>
+            <div class="quick">
+              {% if can('rma_create') %}<a href="/repairs/new">+ New repair ticket</a>{% endif %}
+              {% if can('receive') %}<a href="/inventory/new">+ Receive inventory</a>{% endif %}
+              <a href="/repairs">Repair queue</a>
+              <a href="/cores">Core repairs</a>
+              <a href="/inventory">Inventory</a>
+              {% if can('client_view') %}<a href="/clients">Clients</a>{% endif %}
+            </div>
+          </div>
+
+          <div class="tiles">
+            {% for t in tiles %}
+              <a class="tile {{t.tone}}" href="{{t.url}}">
+                <span>{{t.label}}</span>
+                <strong>{{t.count}}</strong>
+                <small>{{t.hint}}</small>
+              </a>
+            {% endfor %}
+          </div>
+
+          <div class="grid pagelists">
+            <div class="panel">
+              <h2>★ Favorites</h2>
+              <ul class="pagelist">
+                {% for p in favs %}
+                  <li>
+                    <div>
+                      <div class="kind">{{page_kind(p.url)}}</div>
+                      <a href="{{p.url}}"><strong>{{p.label}}</strong></a>
+                    </div>
+                    <form method="post" action="/favorites/remove">
+                      <input type="hidden" name="id" value="{{p.id}}">
+                      <button title="Remove from favorites">✕</button>
+                    </form>
+                  </li>
+                {% else %}
+                  <li class="muted">No favorites yet. Click ☆ Favorite at the top right of any page (a ticket, a filtered queue, a client) to pin it here.</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div class="panel">
+              <h2>Recent</h2>
+              <ul class="pagelist">
+                {% for p in recent %}
+                  <li>
+                    <div>
+                      <div class="kind">{{page_kind(p.url)}}</div>
+                      <a href="{{p.url}}"><strong>{{p.label}}</strong></a>
+                    </div>
+                    <span class="muted">{{p.at|daytime}}</span>
+                  </li>
+                {% else %}
+                  <li class="muted">Records you open (tickets, cores, stock items, clients) will show up here.</li>
+                {% endfor %}
+              </ul>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

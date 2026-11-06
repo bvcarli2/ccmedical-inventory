@@ -477,13 +477,102 @@
           grid-template-columns: 1fr
         }
       }
+      /* ---- ticket update form (same as cores) ---- */
+      .update-form .row3 {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 12px
+      }
+      .update-form .row3b {
+        display: grid;
+        grid-template-columns: 1fr 1fr 2fr;
+        gap: 12px;
+        margin-top: 12px
+      }
+      .update-form .who {
+        font-size: 15px;
+        font-weight: 700;
+        margin-bottom: 12px
+      }
+      .update-form .sign {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 16px;
+        gap: 12px;
+        flex-wrap: wrap
+      }
+      .update-form .sign .name {
+        font-style: italic;
+        color: var(--muted)
+      }
+      .update-form textarea {
+        min-height: 150px;
+        line-height: 1.5
+      }
+      /* ---- v1.09: Start / End / Total time on ticket updates ---- */
+      .update-form .row-time {
+        display: grid;
+        grid-template-columns: 2fr 1.2fr 1fr 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 12px
+      }
+      .update-form .total-box {
+        border: 1px solid #dfe7ee;
+        background: #f6f9fb;
+        border-radius: 8px;
+        padding: 9px 11px;
+        font-weight: 700;
+        min-height: 20px
+      }
+      .adjust-form {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: flex-start
+      }
+      .adjust-form > * {
+        width: auto
+      }
+      .adjust-list {
+        list-style: none;
+        margin: 10px 0 0;
+        padding: 0;
+        font-size: 13px
+      }
+      .adjust-list li {
+        border-top: 1px solid #eef2f6;
+        padding: 8px 0
+      }
+      a.sortlink {
+        color: inherit;
+        text-decoration: none;
+        white-space: nowrap
+      }
+      a.sortlink:hover {
+        text-decoration: underline
+      }
+      @media(max-width:700px) {
+        .update-form .row-time,
+        .update-form .row3b {
+          grid-template-columns: 1fr 1fr
+        }
+      }
+      .log .costs {
+        font-size: 12px;
+        color: #5d6f80;
+        margin-top: 4px
+      }
     </style>
   </head>
   <body>
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand">CC Medical<small>Inventory Workspace</small></div>
+        <a href="/" class="brandlink"><div class="brand">CC Medical<small>Inventory Workspace</small></div></a>
+        <!--search-->
         <div class="label">Inventory</div>
+        <a class="nav" href="/">Home</a>
         {% if can('receive') %}
           <a class="nav" href="/inventory/new">+ New Inventory</a>
         {% endif %}
@@ -492,14 +581,16 @@
         {% endif %}
         <a class="nav" href="/products">Product Database</a>
         <a class="nav" href="/cores">Core Repairs (CR)</a>
-        <a class="nav" href="/?view=Active">Active Inventory</a>
-        <a class="nav" href="/?view=Sold%20archive">Sold Archive</a>
+        <a class="nav" href="/inventory?view=Active">Active Inventory</a>
+        {% if can('restricted_stock') %}<a class="nav" href="/inventory?view=Sold%20archive">Sold Archive</a>{% endif %}
         <a class="nav active" href="/repairs">Customer Repairs</a>
-        <a class="nav" href="/?view=On%20loan">Loaners</a>
-        <a class="nav" href="/?view=Rental">Rental</a>
-        <a class="nav" href="/?view=Pending%20review">Pending</a>
-        <a class="nav" href="/?view=Needs%20review">Needs Review</a>
-        <a class="nav" href="/?view=All">All Records</a>
+        {% if can('restricted_stock') %}
+          <a class="nav" href="/inventory?view=On%20loan">Loaners</a>
+          <a class="nav" href="/inventory?view=Rental">Rental</a>
+        {% endif %}
+        <a class="nav" href="/inventory?view=Pending%20review">Pending</a>
+        <a class="nav" href="/inventory?view=Needs%20review">Needs Review</a>
+        <a class="nav" href="/inventory?view=All">All Records</a>
       </aside>
       <div class="main">
         <header class="top">Customer Repairs / Repair Tickets</header>
@@ -575,6 +666,10 @@
                     {% endfor %}
                   </select>
                 </div>
+                {% if request.args.get('sort') %}
+                  <input type="hidden" name="sort" value="{{request.args.get('sort')}}">
+                  <input type="hidden" name="dir" value="{{request.args.get('dir','')}}">
+                {% endif %}
                 <div class="actions" style="margin:0">
                   <button>Filter</button>
                   <a class="btn secondary" href="/repairs">Reset</a>
@@ -586,23 +681,24 @@
                 {% elif queue=='open' %}All open tickets
                 {% elif queue=='closed' %}Closed tickets
                 {% else %}{{queue}} queue{% endif %}
-                <span class="muted">· {{rows|length}} shown, oldest first</span>
+                <span class="muted">· {{rows|length}} shown · click a column to sort</span>
               </h2>
               <div class="tablewrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Ticket</th>
-                      <th>RMA</th>
-                      <th>Client</th>
-                      <th>Sales rep</th>
-                      <th>Equipment</th>
-                      <th>Serial</th>
-                      <th>Stage</th>
-                      <th>Whose turn</th>
-                      <th>Assigned</th>
-                      <th>In stage</th>
-                      <th>Total</th>
+                      <th>{{ sort_header('ticket', 'Ticket', 'in_stage') }}</th>
+                      <th>{{ sort_header('rma', 'RMA', 'in_stage') }}</th>
+                      <th>{{ sort_header('client', 'Client', 'in_stage') }}</th>
+                      <th>{{ sort_header('rep', 'Sales rep', 'in_stage') }}</th>
+                      <th>{{ sort_header('equipment', 'Equipment', 'in_stage') }}</th>
+                      <th>{{ sort_header('serial', 'Serial', 'in_stage') }}</th>
+                      <th>{{ sort_header('stage', 'Stage', 'in_stage') }}</th>
+                      <th>{{ sort_header('team', 'Whose turn', 'in_stage') }}</th>
+                      <th>{{ sort_header('assigned', 'Assigned', 'in_stage') }}</th>
+                      <th>{{ sort_header('received', 'Received', 'in_stage') }}</th>
+                      <th>{{ sort_header('in_stage', 'In stage', 'in_stage') }}</th>
+                      <th>{{ sort_header('total', 'Total', 'in_stage') }}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -623,6 +719,7 @@
                         <td><span class="pill">{{r.stage}}</span>{% if r.warranty %} <span class="pill">Warranty</span>{% endif %}</td>
                         <td>{{r.team}}</td>
                         <td>{{r.assigned_name or '—'}}</td>
+                        <td>{{r.received_date|day}}</td>
                         <td>
                           {% if r.age=='closed' %}
                             <span class="pill closed">{{r.resolution or 'Closed'}}</span>
@@ -636,7 +733,7 @@
                       </tr>
                     {% else %}
                       <tr>
-                        <td colspan="11">Nothing in this queue.</td>
+                        <td colspan="12">Nothing in this queue.</td>
                       </tr>
                     {% endfor %}
                   </tbody>
@@ -704,10 +801,10 @@
                     <select name="assigned_to">
                       <option value="">Not assigned yet</option>
                       {% for t in techs %}
-                        <option value="{{t.username}}">{{t.name}}</option>
+                        <option value="{{t.username}}" {% if t.username==assign_default %}selected{% endif %}>{{t.name}}</option>
                       {% endfor %}
                     </select>
-                    <div class="hint">Optional. A tech can also assign themselves when they pick it up.</div>
+                    <div class="hint">Optional. A tech can also assign themselves when they pick it up. Technicians opening a ticket are assigned to it.</div>
                   </div>
                   <div class="field wide">
                     <label>Intake notes</label>
@@ -761,7 +858,8 @@
               <div class="card">
                 <span>Total days · Assigned</span>
                 <strong>{{r.total_days}}</strong>
-                <div class="muted">{{r.assigned_name or 'Not assigned'}}</div>
+                <div class="muted">{{r.assigned_name or 'Not assigned'}} · Time logged: {{total_hours|hours if total_hours else '0.00 hrs'}}
+                  {% if can('view_cost') and (parts_total or other_total) %} · Parts ${{'{:,.2f}'.format(parts_total)}} · Additional ${{'{:,.2f}'.format(other_total)}}{% endif %}</div>
               </div>
             </div>
 
@@ -814,6 +912,68 @@
               </div>
             {% endif %}
 
+            {% if can('rma_edit') %}
+              <div class="panel">
+                <form method="post" action="/repairs/{{r.id}}/note" class="update-form">
+                  <div class="who">Ticket update — <span class="signer">{{me}}</span></div>
+                  <div class="row-time">
+                    <div class="field">
+                      <label>Posted by</label>
+                      {% if is_admin %}
+                        <select name="technician" onchange="document.querySelectorAll('.signer').forEach(e => e.textContent = this.options[this.selectedIndex].text)">
+                          <option value="{{g.user.username}}">{{me}}</option>
+                          {% for t in techs if t.username != g.user.username %}
+                            <option value="{{t.username}}">{{t.name}}</option>
+                          {% endfor %}
+                        </select>
+                        <div class="hint">Admins can post on a technician's behalf.</div>
+                      {% else %}
+                        <input value="{{me}}" readonly>
+                      {% endif %}
+                    </div>
+                    <div class="field">
+                      <label>Day worked on</label>
+                      <input name="work_date" type="date" value="{{today}}" required>
+                    </div>
+                    <div class="field">
+                      <label>Start</label>
+                      <input name="work_start" type="time" data-time="start">
+                    </div>
+                    <div class="field">
+                      <label>End</label>
+                      <input name="work_end" type="time" data-time="end">
+                    </div>
+                    <div class="field">
+                      <label>Total</label>
+                      <div class="total-box" data-time-total>—</div>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label>Ticket update</label>
+                    <textarea name="note" data-rich placeholder="What you checked, found or replaced; a call with the client; a part ordered; carrier and tracking number; partner and their RMA. Ctrl+B for bold."></textarea>
+                  </div>
+                  <div class="row3b">
+                    <div class="field">
+                      <label>Parts cost ($)</label>
+                      <input name="parts" data-money inputmode="decimal" placeholder="0.00">
+                    </div>
+                    <div class="field">
+                      <label>Additional cost ($)</label>
+                      <input name="other" data-money inputmode="decimal" placeholder="0.00">
+                      <div class="hint">Shipping, outside service, etc.</div>
+                    </div>
+                    <div class="field">
+                      <div class="hint" style="margin-top:24px">Time and costs are optional. To change the stage, use <strong>Move this ticket</strong> above.</div>
+                    </div>
+                  </div>
+                  <div class="sign">
+                    <span class="name">— <span class="signer">{{me}}</span></span>
+                    <button>Submit Update</button>
+                  </div>
+                </form>
+              </div>
+            {% endif %}
+
             <div class="twocol">
               <div>
                 <div class="panel">
@@ -824,7 +984,7 @@
                       <div class="section-title">Client and equipment</div>
                       <div class="field">
                         <label>Client</label>
-                        <input name="customer" value="{{client_text}}" required list="client-list" autocomplete="off" {% if not can('rma_create') %}readonly title="Your role can't change the client"{% endif %}>
+                        <input name="customer" value="{{client_text}}" required list="client-list" autocomplete="off" {% if not can('rma_client_edit') %}readonly title="Shipping, Sales or Admin can change the client"{% endif %}>
                         <datalist id="client-list">
                           {% for c in client_options() %}
                             <option value="{{c.client_code}} · {{c.name}}">
@@ -836,24 +996,27 @@
                       </div>
                       <div class="field">
                         <label>RMA number</label>
-                        <input name="rma" value="{{r.rma}}" {% if not can('rma_create') %}readonly{% endif %}>
+                        <input name="rma" value="{{r.rma}}" {% if not can('rma_client_edit') %}readonly title="Shipping, Sales or Admin can change the RMA"{% endif %}>
                         <div class="hint">Ours, or the partner's RMA for an outsourced repair.</div>
                       </div>
+                      {% if not can('repair_equipment_edit') %}
+                        <div class="field wide hint" style="margin:0">Serial, model, part number and manufacturer corrections are made by Shipping, Sales or an Admin. Note anything wrong in a ticket update.</div>
+                      {% endif %}
                       <div class="field">
                         <label>Manufacturer</label>
-                        <input name="manufacturer" value="{{r.manufacturer or ''}}" placeholder="e.g. GE, Philips">
+                        <input name="manufacturer" value="{{r.manufacturer or ''}}" placeholder="e.g. GE, Philips" {% if not can('repair_equipment_edit') %}readonly title="Ask Shipping, Sales or an Admin to correct this"{% endif %}>
                       </div>
                       <div class="field">
                         <label>Model</label>
-                        <input name="model" value="{{r.model or ''}}" placeholder="e.g. C1-6-D">
+                        <input name="model" value="{{r.model or ''}}" placeholder="e.g. C1-6-D" {% if not can('repair_equipment_edit') %}readonly title="Ask Shipping, Sales or an Admin to correct this"{% endif %}>
                       </div>
                       <div class="field">
                         <label>Part number</label>
-                        <input name="part_number" value="{{r.part_number or ''}}" placeholder="OEM part number, if known">
+                        <input name="part_number" value="{{r.part_number or ''}}" placeholder="OEM part number, if known" {% if not can('repair_equipment_edit') %}readonly title="Ask Shipping, Sales or an Admin to correct this"{% endif %}>
                       </div>
                       <div class="field">
                         <label>Serial number</label>
-                        <input name="serial" value="{{r.serial or ''}}">
+                        <input name="serial" value="{{r.serial or ''}}" {% if not can('repair_equipment_edit') %}readonly title="Ask Shipping, Sales or an Admin to correct this"{% endif %}>
                       </div>
                       <div class="field">
                         <label>Location</label>
@@ -903,7 +1066,7 @@
                         <div class="field">
                           <label>Quoted price ($)</label>
                           <input name="quoted_price" data-money value="{{'%.2f'|format(r.quoted_price) if r.quoted_price is not none else ''}}" placeholder="Set by the sales rep" {% if not can('repair_price') %}readonly{% endif %}>
-                          <div class="hint">What the client is charged. Recording it builds a price history per model.</div>
+                          <div class="hint">What the client is charged. Recording it builds a price history per model.{% if can('cost_adjust') and r.quoted_price is not none %} To correct it with a reason on record, use <a href="#adjust">Adjust quoted price</a>.{% endif %}</div>
                         </div>
                         <div class="field">
                           <label>QuickBooks estimate #</label>
@@ -928,7 +1091,7 @@
                       <div class="section-title">Intake notes</div>
                       <div class="field wide">
                         <div class="text">{{r.notes|rich if r.notes else '—'}}</div>
-                        <div class="hint">What came in with the unit. Add anything new as a work-log note instead.</div>
+                        <div class="hint">What came in with the unit. Add anything new as a ticket update instead.</div>
                       </div>
                     </div>
                     <div class="actions">
@@ -941,20 +1104,31 @@
               <div>
                 <div class="panel">
                   <h2>Work log</h2>
-                  <form method="post" action="/repairs/{{r.id}}/note" style="margin-bottom:12px">
-                    <textarea name="note" rows="2" data-rich placeholder="Add a note: a call with the client, a part ordered, carrier and tracking number, partner and their RMA…"></textarea>
-                    <div class="actions" style="margin-top:8px"><button>Add note</button></div>
-                  </form>
                   <ul class="log">
                     {% for e in work_log %}
                       <li>
-                        <div class="when">{{e.at|daytime}} · {{names.get(e.actor, e.actor) if e.actor else 'system'}}</div>
+                        <div class="when">
+                          {% if e.kind=='update' %}<strong>{{e.work_date|day}}</strong>{% if e.work_start %} · {{e.work_start|clock}}–{{e.work_end|clock}} ({{e.hours|hours}}){% endif %} · posted {{e.at|daytime}}
+                          {% else %}{{e.at|daytime}}{% endif %} · {{names.get(e.actor, e.actor) if e.actor else 'system'}}
+                        </div>
                         <div>
                           <span class="kind">{{e.kind}}</span>
                           {% if e.kind=='stage' %}<strong>{{e.old_stage}} → {{e.new_stage}}</strong>
                           {% elif e.kind=='created' %}<strong>Received</strong>{% endif %}
                         </div>
                         {% if e.text %}<div class="text">{{e.text|rich}}</div>{% endif %}
+                        {% if e.parts_cost or e.other_cost %}
+                          <div class="costs">
+                            {% if can('view_cost') %}
+                              {% set bits = [] %}
+                              {% if e.parts_cost %}{% set _ = bits.append('Parts $' ~ '{:,.2f}'.format(e.parts_cost)) %}{% endif %}
+                              {% if e.other_cost %}{% set _ = bits.append('Additional $' ~ '{:,.2f}'.format(e.other_cost)) %}{% endif %}
+                              {{bits|join(' · ')}}
+                            {% else %}
+                              Costs recorded
+                            {% endif %}
+                          </div>
+                        {% endif %}
                       </li>
                     {% else %}
                       <li class="muted">Nothing logged yet.</li>
@@ -981,6 +1155,31 @@
                     <p class="muted">No other records for this serial. Loaners and exchanges will link here later.</p>
                   {% endif %}
                 </div>
+
+                {% if can('cost_adjust') or adjustments %}
+                  <div class="panel" id="adjust">
+                    <h2>Adjust quoted price</h2>
+                    {% if can('cost_adjust') %}
+                      <p class="muted" style="margin-top:0">Admins only. Current quote: {{'${:,.2f}'.format(r.quoted_price) if r.quoted_price is not none else 'not set'}}. The old and new price and your reason are kept below.</p>
+                      <form method="post" action="/adjust-cost" class="adjust-form">
+                        <input type="hidden" name="kind" value="repair_quote">
+                        <input type="hidden" name="record_id" value="{{r.id}}">
+                        <input type="hidden" name="back" value="/repairs/{{r.id}}">
+                        <input name="amount" data-money inputmode="decimal" placeholder="New price" required style="max-width:130px">
+                        <input name="reason" placeholder="Reason (required)" required style="flex:1;min-width:160px">
+                        <button>Save</button>
+                      </form>
+                    {% endif %}
+                    <ul class="adjust-list">
+                      {% for a in adjustments %}
+                        <li><strong>{{'${:,.2f}'.format(a.old_value) if a.old_value is not none else '—'}} → {{'${:,.2f}'.format(a.new_value)}}</strong>
+                          <div class="muted">{{a.at|daytime}} · {{a.actor}} · {{a.reason}}</div></li>
+                      {% else %}
+                        <li class="muted">No adjustments.</li>
+                      {% endfor %}
+                    </ul>
+                  </div>
+                {% endif %}
               </div>
             </div>
           {% endif %}

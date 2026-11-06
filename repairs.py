@@ -13,7 +13,8 @@ from flask import flash, g, redirect, render_template_string, request, url_for
 
 from auth import ADMIN_ROLES, add_user_block, can, roles_of
 from clients import client_label, resolve_client, serial_matches
-from formatting import clean_note
+from formatting import clean_note, today_pacific, work_hours
+import costs
 
 # ---------------------------------------------------------------------------
 # Stages
@@ -172,6 +173,9 @@ NEW_COLUMNS = [
     ('inventory_code', 'TEXT'),
     ('client_id', 'INTEGER'),
 ]
+# v1.09: a work-log entry can be a "ticket update" with the day worked, start/end time and costs.
+LOG_COLUMNS = [('work_date', 'TEXT'), ('work_start', 'TEXT'), ('work_end', 'TEXT'), ('hours', 'REAL'),
+               ('parts_cost', 'REAL'), ('other_cost', 'REAL')]
 
 
 def now_iso():
@@ -185,6 +189,10 @@ def ensure_repair_schema(c):
     for name, typ in NEW_COLUMNS:
         if name not in cols:
             c.execute(f'ALTER TABLE customer_repairs ADD COLUMN {name} {typ}')
+    have = {r[1] for r in c.execute('PRAGMA table_info(repair_log)')}
+    for name, typ in LOG_COLUMNS:
+        if name not in have:
+            c.execute(f'ALTER TABLE repair_log ADD COLUMN {name} {typ}')
     # Rename pre-v1.05 stages.
     for old, new in OLD_STAGES.items():
         c.execute('UPDATE customer_repairs SET stage=? WHERE stage=?', (new, old))
@@ -316,6 +324,27 @@ def amount(text, label):
 make_inventory_code = None
 
 
+def _text(v):
+    return str(v or '').lower()
+
+
+# Queue columns that can be sorted (?sort=...&dir=asc|desc).
+QUEUE_SORT = {
+    'ticket': lambda t: t['id'],
+    'rma': lambda t: _text(t['rma']),
+    'client': lambda t: _text(t['customer']),
+    'rep': lambda t: _text(t.get('account_owner')),
+    'equipment': lambda t: _text(f"{t['manufacturer'] or ''} {t['model'] or ''}"),
+    'serial': lambda t: _text(t['serial']),
+    'stage': lambda t: STAGE_NAMES.index(t['stage']) if t['stage'] in STAGE_NAMES else 99,
+    'team': lambda t: _text(t['team']),
+    'assigned': lambda t: _text(t['assigned_name']),
+    'in_stage': lambda t: (t['stage_days'], -t['id']),
+    'received': lambda t: str(t['received_date'] or ''),
+    'total': lambda t: t['total_days'],
+}
+
+
 def register_repair_routes(app, conn, base_dir, inventory_code_maker):
     global make_inventory_code
     make_inventory_code = inventory_code_maker
@@ -388,6 +417,10 @@ def register_repair_routes(app, conn, base_dir, inventory_code_maker):
                + ' ORDER BY r.stage_started_at ASC, r.id DESC')
         names = user_names(c)
         rows = [ticket_view(r, names) for r in c.execute(sql, args)]
+        # Sorting: click a column header. Default is longest in its stage first.
+        sort = request.args.get('sort', 'in_stage')
+        key = QUEUE_SORT.get(sort, QUEUE_SORT['in_stage'])
+        rows.sort(key=key, reverse=request.args.get('dir', 'desc' if sort == 'in_stage' else 'asc') == 'desc')
         counts = {r['stage']: r['n'] for r in c.execute('SELECT stage, COUNT(*) n FROM customer_repairs GROUP BY stage')}
         team_counts = {t: sum(counts.get(s, 0) for s, i in STAGES.items() if i['team'] == t) for t in TEAMS}
         mine = c.execute("""SELECT COUNT(*) FROM customer_repairs r LEFT JOIN clients cl ON cl.id=r.client_id
@@ -404,8 +437,9 @@ def register_repair_routes(app, conn, base_dir, inventory_code_maker):
         c = conn()
         if request.method == 'GET':
             techs = tech_list(c); suggestion = next_rma(c); c.close()
-            return render(mode='new', today=date.today().isoformat(), preset_client=request.args.get('client', ''),
-                          techs=techs, rma_suggestion=suggestion)
+            me = g.user['username'] if 'Technician' in roles_of(g.user) else ''
+            return render(mode='new', today=today_pacific().isoformat(), preset_client=request.args.get('client', ''),
+                          techs=techs, rma_suggestion=suggestion, assign_default=me)
         f = request.form
         if not can('rma_create'):
             c.close(); flash("Your role can't create repair tickets."); return redirect(url_for('repairs'))
@@ -413,6 +447,10 @@ def register_repair_routes(app, conn, base_dir, inventory_code_maker):
         if client is None:
             c.close(); flash('Pick the client from the list, or add them under Clients first.')
             return redirect(url_for('repair_new'))
+        assigned = f.get('assigned_to', '').strip()
+        roles = roles_of(g.user)
+        if not assigned and 'Technician' in roles and not (roles & ADMIN_ROLES):
+            assigned = g.user['username']          # a tech opening a ticket is assigned to it
         received = f.get('received_date', '').strip()
         try:
             date.fromisoformat(received)
@@ -421,7 +459,7 @@ def register_repair_routes(app, conn, base_dir, inventory_code_maker):
         try:
             rid = create_ticket(c, client=client, rma=f.get('rma', ''), received=received,
                                 fields={k: f.get(k, '').strip() for k in ('manufacturer', 'model', 'part_number', 'serial', 'location', 'notes')},
-                                assigned_to=f.get('assigned_to', '').strip(), note='Ticket created')
+                                assigned_to=assigned, note='Ticket created')
             c.commit()
         except sqlite3.IntegrityError:
             c.rollback(); c.close(); flash('That RMA number is already used. Each repair needs its own RMA.')
@@ -451,8 +489,14 @@ def register_repair_routes(app, conn, base_dir, inventory_code_maker):
         warranty_of = c.execute('SELECT id, inventory_code, rma, stage FROM customer_repairs WHERE id=?', (r['warranty_of_id'],)).fetchone() if r['warranty_of_id'] else None
         returns = c.execute('SELECT id, inventory_code, rma, stage FROM customer_repairs WHERE warranty_of_id=?', (rid,)).fetchall()
         techs = tech_list(c)
+        adjustments = costs.adjustments_for(c, f'/repairs/{rid}') if can('view_cost') else []
         c.close()
-        return render(mode='detail', r=t, guide=STAGES[t['stage']]['guide'], moves=allowed_moves(r),
+        updates = [e for e in work_log if e['kind'] == 'update']
+        return render(mode='detail', today=today_pacific().isoformat(), adjustments=adjustments,
+                      total_hours=sum(e['hours'] or 0 for e in updates),
+                      parts_total=sum(e['parts_cost'] or 0 for e in updates),
+                      other_total=sum(e['other_cost'] or 0 for e in updates),
+                      me=g.user['full_name'] or g.user['username'], is_admin=is_admin(), r=t, guide=STAGES[t['stage']]['guide'], moves=allowed_moves(r),
                       all_moves=[s for s in STAGE_NAMES if s != t['stage']] if is_admin() else [],
                       work_log=work_log, client=client, client_text=client_label(client) if client else r['customer'],
                       same_serial=same_serial, earlier=earlier, warranty_of=warranty_of, returns=returns,
@@ -492,12 +536,16 @@ def register_repair_routes(app, conn, base_dir, inventory_code_maker):
         def text(name):
             return f.get(name, '').strip()
 
-        # Equipment details: anyone who can edit tickets.
-        for name in ('manufacturer', 'model', 'part_number', 'serial', 'location'):
-            if name in f:
-                changes[name] = text(name)
-        # Client and RMA: the roles that create tickets.
-        if can('rma_create'):
+        # Location: anyone who can edit tickets (techs move units between racks).
+        if 'location' in f:
+            changes['location'] = text('location')
+        # Equipment corrections (serial, model, ...): Shipping, Sales and Admins, not technicians.
+        if can('repair_equipment_edit'):
+            for name in ('manufacturer', 'model', 'part_number', 'serial'):
+                if name in f:
+                    changes[name] = text(name)
+        # Client and RMA: Shipping, Sales and Admins.
+        if can('rma_client_edit'):
             if 'customer' in f:
                 client = resolve_client(c, f.get('customer', ''))
                 if client is None:
@@ -542,23 +590,48 @@ def register_repair_routes(app, conn, base_dir, inventory_code_maker):
         c.close()
         return redirect(url_for('repair_detail', rid=rid))
 
-    # ----- Add a work-log note -----
+    # ----- Ticket update (work log entry with time and costs) -----
     @app.post('/repairs/<int:rid>/note')
     def repair_note(rid):
-        note = request.form.get('note', '').strip()
-        note = clean_note(note)
-        if not note:
-            flash('Type a note first.'); return redirect(url_for('repair_detail', rid=rid))
+        back = redirect(url_for('repair_detail', rid=rid))
         if not can('rma_edit'):
-            flash("Your role can't add notes."); return redirect(url_for('repair_detail', rid=rid))
+            flash("Your role can't post ticket updates."); return back
+        f = request.form
+        body = clean_note(f.get('note', ''))
+        try:
+            parts = amount(f.get('parts'), 'Parts cost') or 0
+            other = amount(f.get('other'), 'Additional cost') or 0
+        except ValueError as e:
+            flash(str(e)); return back
+        work_date = f.get('work_date', '').strip() or today_pacific().isoformat()
+        try:
+            date.fromisoformat(work_date)
+        except ValueError:
+            flash('Enter a valid day worked on.'); return back
+        start, end = f.get('work_start', '').strip(), f.get('work_end', '').strip()
+        hrs, problem = work_hours(start, end)
+        if problem:
+            flash(problem); return back
+        if not (body or parts or other or hrs):
+            flash('Write the update, add a time or a cost before submitting.'); return back
         c = conn()
         if c.execute('SELECT 1 FROM customer_repairs WHERE id=?', (rid,)).fetchone() is None:
             c.close(); return 'Repair ticket not found', 404
-        log(c, rid, 'note', note)
-        c.execute('UPDATE customer_repairs SET updated_at=? WHERE id=?', (now_iso(), rid))
+        # Who did the work: the signed-in person, or (Admins only) a technician picked from the list.
+        actor = g.user['username']
+        pick = f.get('technician', '').strip()
+        if pick and pick != actor and is_admin():
+            if c.execute('SELECT 1 FROM users WHERE username=?', (pick,)).fetchone():
+                actor = pick
+        now = now_iso()
+        c.execute("""INSERT INTO repair_log(repair_id, at, actor, kind, text, work_date, work_start, work_end, hours, parts_cost, other_cost)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                  (rid, now, actor, 'update', body, work_date, start if hrs else None, end if hrs else None, hrs,
+                   parts or None, other or None))
+        c.execute('UPDATE customer_repairs SET updated_at=? WHERE id=?', (now, rid))
         c.commit(); c.close()
-        flash('Note added')
-        return redirect(url_for('repair_detail', rid=rid))
+        flash('Update posted')
+        return back
 
 
 # ---------------------------------------------------------------------------

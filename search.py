@@ -52,9 +52,11 @@ def run_search(c, q, limit=PER_GROUP):
         exact = key in (squash(r['inventory_code']), squash(r['rma']), squash(r['serial']))
         out['Repair tickets'].append({'kind': 'Repair ticket', 'label': label, 'sub': sub, 'url': f"/repairs/{r['id']}", 'exact': exact})
 
+    # The repair team doesn't see Sold, Loaner or Rental stock in search (they can still open one from a serial alert).
+    hide = '' if can('restricted_stock') else " AND status NOT IN ('Sold archive','On loan','Rental')"
     rows = c.execute(f"""
         SELECT * FROM units
-        WHERE inventory_code LIKE ? OR {nospace.format('serial')} LIKE ? OR product_raw LIKE ? OR physical_location LIKE ?
+        WHERE (inventory_code LIKE ? OR {nospace.format('serial')} LIKE ? OR product_raw LIKE ? OR physical_location LIKE ?){hide}
         ORDER BY CASE WHEN status='Active' THEN 0 ELSE 1 END, id DESC LIMIT ?""",
                      (like, key_like, like, like, limit)).fetchall()
     for r in rows:

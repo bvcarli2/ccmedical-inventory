@@ -162,8 +162,10 @@
   <body>
     <div class="shell">
       <aside>
-        <h2>CC Medical</h2>
-        <a href="/">Inventory Dashboard</a>
+        <h2><a class="brandlink" href="/">CC Medical</a></h2>
+        <!--search-->
+        <a href="/">Home</a>
+        <a href="/inventory">Inventory Dashboard</a>
         <a class="active" href="/inventory/new">+ New Inventory</a>
         {% if can('client_view') %}
           <a href="/clients">Clients</a>

@@ -181,6 +181,13 @@ for i, (path_name, stop, stage_days) in enumerate(plan, start=1):
             R.log(c, rid, 'note', f'Shipped UPS Ground, tracking 1ZDEMO{rnd.randint(100000, 999999)}', when=when)
         if stage == 'At Partner':
             R.log(c, rid, 'note', 'Sent to Demo Probe Partners; partner RMA PR-DEMO-77', when=when)
+        if stage in ('Eval Complete', 'Repair Complete'):     # the tech's ticket update, with time worked
+            start, end, hrs = rnd.choice([('09:00', '10:30', 1.5), ('13:15', '14:00', 0.75), ('10:00', '12:15', 2.25)])
+            text = ('1. Element test and visual check\n2. Found: ' + rnd.choice(FINDINGS) if stage == 'Eval Complete'
+                    else 'Repair done.\n- Element test: all pass\n- Image test on a demo system: OK')
+            parts = float(rnd.randrange(40, 300, 10)) if stage == 'Repair Complete' else None
+            c.execute("""INSERT INTO repair_log(repair_id, at, actor, kind, text, work_date, work_start, work_end, hours, parts_cost)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)""", (rid, when, 'repair', 'update', text, when[:10], start, end, hrs, parts))
     if path_name == 'standard' and stop == 'Closed':
         closed_std.append(rid)
 
@@ -206,9 +213,10 @@ for i, (stage, steps) in enumerate(core_plan):
         other = 25.0 if st == 'Waiting on Parts' else 0.0
         body = CORE_NOTES.get(st, 'Not worth repairing right now; parked until a donor probe comes in.')
         c.execute("""INSERT INTO core_transactions(core_id,performed_at,technician,description,labor_method,labor_hours,labor_rate,labor_cost,
-                     parts_cost,other_cost,work_date,work_time,actor,old_stage,new_stage) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (cid, when, 'Repair Tech (demo)', body, 'none', 0, 0, 0, parts, other, when[:10], rnd.choice(['', '09:30', '14:15']),
-                   'repair', prev if st != prev else None, st if st != prev else None))
+                     parts_cost,other_cost,work_date,work_time,actor,old_stage,new_stage,work_start,work_end,hours)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (cid, when, 'Repair Tech (demo)', body, 'none', 0, 0, 0, parts, other, when[:10], '',
+                   'repair', prev if st != prev else None, st if st != prev else None, *rnd.choice([('09:30', '11:00', 1.5), ('14:15', '15:00', 0.75), (None, None, None)])))
         prev = st
     c.execute('UPDATE core_items SET stage=?, stage_started_at=? WHERE id=?',
               (prev if stage != 'Converted to Stock' else 'Ready for Stock', ts(age - 2 - (len(path) - 1) * 3) if path else ts(age), cid))

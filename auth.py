@@ -60,7 +60,7 @@ ROLE_HELP = {
     "Admin": "All inventory, clients, catalog and settings; manages Sales/Shipping/Technician staff",
     "Sales": "Clients, repair tickets, pricing and approvals; sees purchase costs",
     "Shipping": "Receiving, shelf moves, repair tickets, and shipping repairs back",
-    "Technician": "Repair evaluation and repair stages, core labor/parts/QC, shelf moves",
+    "Technician": "Repair evaluation and repair work, core updates, shelf moves; can open their own repair tickets",
 }
 _SA, _A, _S, _SH, _T = ROLES
 PERMISSIONS = {
@@ -71,8 +71,12 @@ PERMISSIONS = {
     "client_view":    {_SA, _A, _S, _SH},
     "client_edit":    {_SA, _A, _S},
     "client_import":  {_SA, _A},              # link clients to Salesforce IDs from a CSV
-    "rma_create":     {_SA, _A, _S, _SH},
-    "rma_edit":       {_SA, _A, _S, _SH, _T}, # edit ticket details and add work-log notes
+    "rma_create":     {_SA, _A, _S, _SH, _T}, # open a new repair ticket (techs too, as a backup)
+    "rma_client_edit": {_SA, _A, _S, _SH},    # change a ticket's client or RMA number
+    "rma_edit":       {_SA, _A, _S, _SH, _T}, # post ticket updates; change location
+    "repair_equipment_edit": {_SA, _A, _S, _SH},  # correct manufacturer, model, part number, serial on a ticket
+    "restricted_stock": {_SA, _A, _S, _SH},   # Sold archive, Loaners and Rental lists (not needed by the repair team)
+    "cost_adjust":    {_SA, _A},              # adjust a recorded cost or price, with a reason
     # Repair tickets (repairs.py). Who may MOVE a ticket depends on whose turn it is: see STAGES in repairs.py.
     "repair_assign":  {_SA, _A, _T},          # assign a tech to a ticket
     "repair_eval":    {_SA, _A, _T},          # write eval findings
@@ -224,9 +228,12 @@ def requires(perm):
 # --- Page chrome -----------------------------------------------------------
 
 USER_BLOCK = """<div style="margin-top:auto;padding:16px 13px 0;border-top:1px solid #ffffff22;font-size:12px;color:#b7c8d7">
-{% if g.user %}Signed in as <b style="color:#fff">{{ g.user.username }}</b><br><span>{{ (g.user.roles or 'View only').replace(',', ' · ') }}</span><br>
+{% if g.user %}{% if g.viewing_as %}<div style="background:#f5c451;color:#3a2a00;border-radius:7px;padding:7px 9px;margin-bottom:8px;font-weight:600">Viewing as {{ g.viewing_as }}
+<form method="post" action="/view-as" style="margin:6px 0 0"><input type="hidden" name="role" value=""><input type="hidden" name="next" value="{{ request.full_path }}"><button style="background:#3a2a00;color:#fff;border:0;border-radius:6px;padding:5px 9px;cursor:pointer;font:inherit;font-size:12px;margin:0">Back to SuperAdmin</button></form></div>{% endif %}
+Signed in as <b style="color:#fff">{{ g.user.username }}</b><br><span>{{ (g.user.roles or 'View only').replace(',', ' · ') }}</span><br>
 <a href="/account/password" style="color:#dce9f4;padding:6px 0;display:inline">Change password</a>
 {% if can('users_manage') %} · <a href="/users" style="color:#dce9f4;padding:6px 0;display:inline">Users</a>{% endif %}
+{% if g.real_superadmin and not g.viewing_as %}<form method="post" action="/view-as" style="margin:8px 0 0;display:flex;gap:6px"><input type="hidden" name="next" value="{{ request.full_path }}"><select name="role" style="flex:1;min-width:0;padding:5px;border-radius:6px;border:0;font:inherit;font-size:12px"><option value="">View as…</option><option>Admin</option><option>Sales</option><option>Shipping</option><option>Technician</option></select><button style="background:#2b5f88;color:#fff;border:0;border-radius:6px;padding:5px 9px;cursor:pointer;font:inherit;font-size:12px;margin:0">Go</button></form>{% endif %}
 <form method="post" action="/logout" style="margin:8px 0 0"><button style="background:#2b5f88;color:#fff;border:0;border-radius:7px;padding:7px 12px;cursor:pointer;font:inherit;margin:0">Sign out</button></form>{% endif %}
 </div>"""
 
@@ -237,6 +244,8 @@ PAGE_TOOLS = (Path(__file__).resolve().parent / "page_tools.html").read_text(enc
 
 def add_user_block(template_html):
     """Add the search box under the sidebar title, the shared page tools, and the signed-in user panel."""
+    if "<!--search-->" in template_html:
+        return template_html.replace("<!--search-->", SEARCH_BOX, 1).replace("</aside>", PAGE_TOOLS + USER_BLOCK + "</aside>", 1)
     m = re.search(r"<aside[^>]*>.*?(</h2>|</small></div>)", template_html, re.S)
     if m:
         template_html = template_html[:m.end()] + SEARCH_BOX + template_html[m.end():]
@@ -317,6 +326,16 @@ def register_auth(app, conn):
             if source and urlparse(source).netloc != request.host:
                 abort(403)
 
+        # "View as": a SuperAdmin can see the app with another role's permissions (session["view_as"]).
+        g.real_superadmin = bool(g.user) and "SuperAdmin" in roles_of(g.user)
+        g.viewing_as = None
+        if g.real_superadmin and session.get("view_as") in ROLES and session.get("view_as") != "SuperAdmin":
+            g.viewing_as = session["view_as"]
+            u = dict(g.user)
+            u["roles"] = g.viewing_as
+            u["is_admin"] = 1 if g.viewing_as in ADMIN_ROLES else 0
+            g.user = u
+
         if request.endpoint in PUBLIC_ENDPOINTS:
             return None
         if g.user is None:
@@ -327,6 +346,21 @@ def register_auth(app, conn):
         if perm and not can(perm):
             abort(403)
         return None
+
+    @app.post("/view-as")
+    def view_as():
+        # Only a real SuperAdmin can switch; the switch itself is allowed while viewing as someone else.
+        if not g.get("real_superadmin"):
+            abort(403)
+        role = request.form.get("role", "")
+        if role in ROLES and role != "SuperAdmin":
+            session["view_as"] = role
+            flash(f"Viewing the app as {role}. Use 'Back to SuperAdmin' in the sidebar to switch back.")
+        else:
+            session.pop("view_as", None)
+            flash("Back to your own SuperAdmin view.")
+        nxt = request.form.get("next") or "/"
+        return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else "/")
 
     @app.context_processor
     def permission_helpers():
@@ -415,7 +449,7 @@ def register_auth(app, conn):
                 return redirect("/")
             return redirect(url_for("change_password"))
         return simple_page("Change password", """
-<p><a href="/">Back to inventory</a></p><div class="panel"><h1>Change password</h1>
+<p><a href="/">Back to home</a></p><div class="panel"><h1>Change password</h1>
 <form method="post"><label>Current password</label><input type="password" name="current" autocomplete="current-password" required>
 <label>New password (at least {{ n }} characters)</label><input type="password" name="new" autocomplete="new-password" required minlength="{{ n }}">
 <label>Confirm new password</label><input type="password" name="confirm" autocomplete="new-password" required minlength="{{ n }}">
@@ -486,7 +520,7 @@ def register_auth(app, conn):
             c.close()
         assignable = ROLES if super_admin else [r for r in ROLES if r not in ADMIN_ROLES]
         return simple_page("Users", """
-<p><a href="/">Back to inventory</a></p>
+<p><a href="/">Back to home</a></p>
 <div class="panel"><h1>Add a user</h1><form method="post"><input type="hidden" name="action" value="create">
 <label>Username</label><input name="username" required maxlength="60">
 <label>Full name (shown to staff)</label><input name="full_name" maxlength="120">
@@ -515,7 +549,7 @@ def register_auth(app, conn):
     @app.errorhandler(403)
     def forbidden(_e):
         return simple_page("Not allowed", """<div class="panel"><h1>Not allowed</h1>
-<p>Your account doesn't have access to this page, or the request came from outside this site.</p><p><a href="/">Back to inventory</a></p></div>"""), 403
+<p>Your account doesn't have access to this page, or the request came from outside this site.</p><p><a href="/">Back to home</a></p></div>"""), 403
 
     @app.errorhandler(401)
     def unauthorized(_e):

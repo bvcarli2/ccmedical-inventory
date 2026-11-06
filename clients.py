@@ -188,7 +188,7 @@ a{color:#245d86}label{display:block;margin:0 0 4px;font-weight:600;font-size:12p
 @media(max-width:900px){aside{position:static;width:auto;min-height:0}main{margin:0;padding:15px}.grid,.cards{grid-template-columns:1fr 1fr}.grid .wide{grid-column:span 2}}
 @media(max-width:560px){.grid,.cards{grid-template-columns:1fr}.grid .wide{grid-column:span 1}dl{grid-template-columns:1fr}}</style>'''
 LAYOUT = add_user_block('''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CC Medical | Clients</title>''' + STYLE + '''</head><body>
-<aside><h2>CC Medical</h2><a href="/">Inventory Dashboard</a>{% if can('receive') %}<a href="/inventory/new">+ New Inventory</a>{% endif %}<a class="active" href="/clients">Clients</a><a href="/products">Product Database</a><a href="/cores">Core Repairs (CR)</a><a href="/repairs">Customer Repairs (RP)</a></aside>
+<aside><h2><a class="brandlink" href="/">CC Medical</a></h2><!--search--><a href="/">Home</a><a href="/inventory">Inventory Dashboard</a>{% if can('receive') %}<a href="/inventory/new">+ New Inventory</a>{% endif %}<a class="active" href="/clients">Clients</a><a href="/products">Product Database</a><a href="/cores">Core Repairs (CR)</a><a href="/repairs">Customer Repairs (RP)</a></aside>
 <main>{% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="msg">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>''')
 
 

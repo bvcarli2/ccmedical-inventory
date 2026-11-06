@@ -185,29 +185,50 @@ def inventory_new():
 
 TEMPLATE=add_user_block((BASE/'dashboard.html').read_text(encoding='utf-8'))
 ENTRY_TEMPLATE=add_user_block((BASE/'inventory_entry.html').read_text(encoding='utf-8'))
-@app.route('/')
+# Sold, Loaners and Rental lists are hidden from roles without 'restricted_stock' (the repair team).
+# They can still open a single record (for example from a serial number alert).
+HIDDEN_STATUSES=('Sold archive','On loan','Rental')
+app.jinja_env.globals['hidden_statuses']=HIDDEN_STATUSES
+UNIT_SORT={'code':"COALESCE(inventory_code,'')",'product':'product_raw COLLATE NOCASE','serial':'serial COLLATE NOCASE',
+ 'location':"COALESCE(physical_location,location_raw) COLLATE NOCASE",'status':'status','cost':'cost','row':'source_row','id':'id'}
+@app.route('/inventory')
 def index():
- view=request.args.get('view','Active');q=request.args.get('q','').strip();page=max(1,request.args.get('page',1,type=int) or 1);c=conn();where=[];params=[]
- if view=='Active':where.append("status IN ('Active','Rental')")
+ view=request.args.get('view','Active');q=request.args.get('q','').strip();page=max(1,request.args.get('page',1,type=int) or 1)
+ open_all=can('restricted_stock')
+ if not open_all and view in HIDDEN_STATUSES:
+  flash('That list is not available for your role. You can still open a single record from search or a link.');return redirect('/inventory')
+ c=conn();where=[];params=[]
+ if view=='Active':where.append("status IN ('Active','Rental')" if open_all else "status='Active'")
  elif view!='All':where.append('status=?');params.append(view)
- if q:where.append('(product_raw LIKE ? OR serial LIKE ? OR notes LIKE ? OR location_raw LIKE ?)');params.extend(['%'+q+'%']*4)
+ if not open_all:where.append("status NOT IN ('Sold archive','On loan','Rental')")
+ if q:where.append('(product_raw LIKE ? OR serial LIKE ? OR notes LIKE ? OR location_raw LIKE ? OR inventory_code LIKE ?)');params.extend(['%'+q+'%']*5)
  clause=' WHERE '+' AND '.join(where) if where else ''
- stats=c.execute('SELECT COUNT(*) n,COUNT(cost) priced,COALESCE(SUM(cost),0) val FROM units'+clause,params).fetchone();overview={r['status']:r['n'] for r in c.execute('SELECT status, COUNT(*) n FROM units GROUP BY status')};all_count=sum(overview.values());rows=c.execute('SELECT * FROM units'+clause+' ORDER BY id LIMIT 300 OFFSET ?',params+[(page-1)*300]).fetchall();c.close()
- return render_template_string(TEMPLATE,view=view,q=q,page=page,total=stats['n'],priced=stats['priced'],value=stats['val'],units=rows,unit=None,overview=overview,all_count=all_count)
+ sort=dict(UNIT_SORT)
+ if not can('view_cost'):sort.pop('cost')
+ order=formatting.order_by(sort,'id')
+ stats=c.execute('SELECT COUNT(*) n,COUNT(cost) priced,COALESCE(SUM(cost),0) val FROM units'+clause,params).fetchone()
+ overview={r['status']:r['n'] for r in c.execute('SELECT status, COUNT(*) n FROM units GROUP BY status') if open_all or r['status'] not in HIDDEN_STATUSES}
+ all_count=sum(overview.values())
+ rows=c.execute('SELECT * FROM units'+clause+' ORDER BY '+order+', id LIMIT 300 OFFSET ?',params+[(page-1)*300]).fetchall();c.close()
+ return render_template_string(TEMPLATE,view=view,q=q,page=page,total=stats['n'],priced=stats['priced'],value=stats['val'],units=rows,unit=None,overview=overview,all_count=all_count,
+  sort=request.args.get('sort',''),sdir=request.args.get('dir',''))
 @app.route('/unit/<int:uid>')
 def unit(uid):
  c=conn();u=c.execute('SELECT * FROM units WHERE id=?',(uid,)).fetchone()
  if not u:c.close();return 'Not found',404
  moves=c.execute('SELECT * FROM movements WHERE unit_id=? ORDER BY id DESC',(uid,)).fetchall()
  unit_repairs=c.execute('SELECT * FROM repair_orders WHERE unit_id=? ORDER BY id DESC',(uid,)).fetchall()
- same=serial_matches(c,u['serial'],exclude=('unit',uid));c.close()
- return render_template_string(TEMPLATE,view=u['status'],unit=u,overview={},all_count=0,movements=moves,unit_repairs=unit_repairs,same_serial=same)
+ same=serial_matches(c,u['serial'],exclude=('unit',uid))
+ adjustments=costs.adjustments_for(c,f'/unit/{uid}') if can('view_cost') else []
+ c.close()
+ return render_template_string(TEMPLATE,view=u['status'],unit=u,overview={},all_count=0,movements=moves,unit_repairs=unit_repairs,same_serial=same,adjustments=adjustments)
 @app.post('/transfer/<int:uid>')
 def transfer(uid):
  new=norm(request.form.get('location'));status,physical=classify(new)
  if status!='Active':flash('Transfer requires a recognized physical location');return redirect(url_for('unit',uid=uid))
  c=conn();u=c.execute('SELECT physical_location,status FROM units WHERE id=?',(uid,)).fetchone()
  if not u or u['status']=='Sold archive':c.close();return 'Sold records cannot be transferred',400
+ if u['status'] in HIDDEN_STATUSES and not can('restricted_stock'):c.close();flash('Loaner and rental items are moved by Shipping or Sales.');return redirect(url_for('unit',uid=uid))
  c.execute('INSERT INTO movements(unit_id,old_location,new_location,note) VALUES (?,?,?,?)',(uid,u['physical_location'],physical,(request.form.get('note','').strip()+' ['+g.user['username']+']').strip()));c.execute('UPDATE units SET physical_location=?,status=? WHERE id=?',(physical,'Active',uid));c.commit();c.close();flash('Transfer recorded');return redirect(url_for('unit',uid=uid))
 @app.post('/repair/<int:uid>')
 def repair(uid):
@@ -276,6 +297,7 @@ register_client_routes(app,conn)
 R.register_repair_routes(app,conn,BASE,new_inventory_code)
 import search, salesforce  # search box and results (search.py); Salesforce ID matching (salesforce.py)
 import cores, formatting  # core repairs and ticket updates (cores.py); Pacific dates and note formatting (formatting.py)
+import home, costs  # home page, favorites and recent pages (home.py); cost adjustments with a reason (costs.py)
 formatting.register_formatting(app)
 @app.get('/assets/<name>')
 def asset(name):
@@ -286,10 +308,12 @@ def asset(name):
 cores.register_core_routes(app,conn,BASE,new_inventory_code,norm)
 search.register_search_routes(app,conn)
 salesforce.register_salesforce_routes(app,conn)
+home.register_home_routes(app,conn,BASE)
+costs.register_cost_routes(app,conn)
 
 def init_db():
  c=conn()
- c.executescript(SCHEMA);R.ensure_repair_schema(c);ensure_entry_schema(c);cores.ensure_core_schema(c);ensure_user_schema(c);ensure_client_schema(c)
+ c.executescript(SCHEMA);R.ensure_repair_schema(c);ensure_entry_schema(c);cores.ensure_core_schema(c);ensure_user_schema(c);ensure_client_schema(c);home.ensure_home_schema(c);costs.ensure_cost_schema(c)
  c.execute("UPDATE units SET status='Rental' WHERE UPPER(TRIM(location_raw))='RENTAL' AND status='On loan'")
  # On a host without a console, the first admin can come from environment variables.
  # This only runs while there are no users at all.

@@ -6,6 +6,8 @@ Internal web app for tracking CC Medical's ultrasound equipment: stock, cores, c
 
 ## What's in the app
 
+The **home page** (click **CC Medical** at the top left of any page) has a big search bar, quick links, counts of what's waiting on you, your **Favorites** (☆ Favorite at the top right of any page) and the records you opened recently.
+
 | Area | What it tracks | ID format |
 |---|---|---|
 | Stock (CC) | Units we own: shelf location, cost, status | `CC-MMDDYY-###` |
@@ -21,10 +23,12 @@ Every page needs a staff login. Serial numbers are **not** unique keys: a matchi
 
 | File | What it does |
 |---|---|
-| `app.py` | Main app: stock, receiving, backup/restore, spreadsheet import |
+| `app.py` | Main app: stock list (`/inventory`), receiving, backup/restore, spreadsheet import |
+| `home.py`, `home.html` | Home page: search, work tiles, favorites and recent pages |
+| `costs.py` | Cost adjustments (Admins): corrects a cost or quoted price with a required reason, keeps the history |
 | `cores.py` | Core repairs: ticket updates, statuses, costs, converting to stock |
-| `formatting.py` | Pacific-time dates ("Oct 30, 2026") and safe display of rich text notes |
-| `page_tools.html` | Added to every page: the rich text editor for notes, and the red warning on negative costs |
+| `formatting.py` | Pacific-time dates ("Oct 30, 2026"), safe display of rich text notes, work hours, sortable column headers |
+| `page_tools.html` | Added to every page: rich text editor, red warning on negative costs, Start/End time totals, the ☆ Favorite button |
 | `trix.js`, `trix.css` | Trix rich text editor (open source, MIT licence, by 37signals), served by the app itself |
 | `repairs.py` | Customer repair tickets: the stages, who can move each one, queues, work log |
 | `search.py` | Search across clients, tickets, stock and cores |
@@ -51,7 +55,9 @@ Each account has one or more roles. The full rules are in `PERMISSIONS` in `auth
 - **Admin**: all inventory, clients, catalog and settings, linking clients to Salesforce. Manages Sales, Shipping and Technician accounts.
 - **Sales**: clients, repair tickets, repair pricing and approvals, inventory lookups and purchase costs.
 - **Shipping**: receiving, shelf moves, repair tickets, and shipping repairs back (Ready to Ship to Shipped).
-- **Technician**: repair evaluation and repair work, core ticket updates (can enter parts costs but not see totals), shelf moves. No costs or prices.
+- **Technician**: repair evaluation and repair work, ticket updates on repairs and cores (can enter parts costs but not see amounts), shelf moves, opening their own repair tickets (assigned to themselves). Can read the Product Database, Active and All lists, but has no Sold, Loaners or Rental lists; a single record still opens from search results or a serial alert. On a repair ticket a technician edits eval findings, location, assignment and updates; serial, model, part number, manufacturer, client and RMA corrections are for Shipping, Sales or Admin. No costs or prices.
+
+**View as (SuperAdmin):** the *View as…* menu at the bottom of the sidebar shows the app exactly as an Admin, Sales, Shipping or Technician account would see it. A yellow box shows while it's on; *Back to SuperAdmin* switches back.
 
 There is always at least one active SuperAdmin, and nobody can change their own access.
 
@@ -76,7 +82,9 @@ Each customer repair is a ticket with one owner at each stage, like an IT helpde
 | Declined | Sales | Ready to Ship (returned free) |
 | Unrepairable | Sales | Closed (exchanged), or Ready to Ship |
 
-- **Moving a ticket:** only the team whose turn it is can move it on; Admins can move any ticket anywhere. Every move, note and edit goes in the ticket's work log with who and when.
+- **Moving a ticket:** only the team whose turn it is can move it on; Admins can move any ticket anywhere. Every move, update and edit goes in the ticket's work log with who and when.
+- **Ticket updates:** day worked on, Start and End time (the Total in hours fills in by itself, e.g. 1.75 hrs), the update in rich text, parts cost and additional cost. All except the text are optional. The ticket shows the total time logged.
+- **The queue** can be sorted by any column (click the header; click again to reverse). It opens longest-in-stage first and has a Received date column.
 - **On hold** stages don't turn yellow or red.
 - **RMA numbers** are created automatically (RMA-10001, ...) if left blank; the field can also hold a partner's RMA.
 - **Closed tickets** record a resolution: Repaired, Warranty, Declined, Exchanged, or Returned unrepaired.
@@ -85,7 +93,7 @@ Each customer repair is a ticket with one owner at each stage, like an IT helpde
 
 ## Core repairs
 
-A core is worked like a ticket. Technicians post **ticket updates**: the day worked on (today by default), an optional time of day, the update itself in a rich text box (bold, numbered and bulleted lists), parts cost, additional cost, and a status change. Updates are signed with the technician's name automatically; Admins can post on a technician's behalf.
+A core is worked like a ticket. Technicians post **ticket updates**: the day worked on (today by default), optional Start and End times (Total in hours is worked out for you), the update itself in a rich text box (bold, numbered and bulleted lists), parts cost, additional cost, and a status change. Updates are signed with the technician's name automatically; Admins can post on a technician's behalf.
 
 | Status | Meaning |
 |---|---|
@@ -96,11 +104,13 @@ A core is worked like a ticket. Technicians post **ticket updates**: the day wor
 | Ready for Stock | Fixed and tested; the update that sets it is the QC sign-off |
 | Converted to Stock | An Admin converted it into a CC stock item carrying the full cost |
 
-Technicians can enter costs but never see amounts or totals; the cost summary is for Sales, Admin and SuperAdmin. Cores in the old QC status become In Repair automatically.
+The core list can be sorted by any column and shows hours logged. Technicians can enter costs but never see amounts or totals; the cost summary is for Sales, Admin and SuperAdmin. Cores in the old QC status become In Repair automatically.
 
 ## Notes and costs
 
-- **Rich text:** every note and description box (core ticket updates, repair intake notes, eval findings and work-log notes, client notes and activity, product descriptions and requests) is a rich text editor. Ctrl+B / Ctrl+I work, and numbered or bulleted lists continue when you press Enter. Notes are stored as HTML and cleaned of anything unsafe every time they're shown. Older plain-text notes still display normally.
+- **Rich text:** every note and description box (ticket updates, repair intake notes, eval findings, client notes and activity, product descriptions and requests) is a rich text editor. Ctrl+B / Ctrl+I work, and numbered or bulleted lists continue when you press Enter. Notes are stored as HTML and cleaned of anything unsafe every time they're shown. Older plain-text notes still display normally.
+- **Adjusting a cost (Admin, SuperAdmin):** a stock item's cost, a core's purchase cost, the parts or additional cost on one core update, and a repair's quoted price can each be corrected on the record's page. A reason is required; the old and new amounts, who and when are listed under **Cost adjustments** (Sales and Admins see it; technicians don't). A converted core is adjusted through its stock item.
+- **Sorting:** the stock list, repair queue and core list sort by clicking a column header.
 - **Costs:** a negative or non-numeric cost turns the field red with a warning and greys out the form's submit button until it's fixed. The server also refuses negative costs.
 
 ## Dates
@@ -156,6 +166,7 @@ The free plan has no permanent disk. After about 15 idle minutes the site sleeps
 
 - **Staff logins** come back automatically from `users.env`.
 - **Demo data** must be re-uploaded: sign in as SuperAdmin, go to `/admin/restore` and upload `demo_inventory.db`.
+- **Favorites, recent pages and cost adjustments** are in the database too, so they reset with it.
 
 Never enter real client or inventory data while on the free plan.
 

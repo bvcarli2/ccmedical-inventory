@@ -12,6 +12,9 @@ from zoneinfo import ZoneInfo
 
 import nh3
 from markupsafe import Markup, escape
+from urllib.parse import urlencode
+
+from flask import request
 
 PACIFIC = ZoneInfo('America/Los_Angeles')
 
@@ -148,9 +151,64 @@ def rich(text):
     return Markup(''.join(out))
 
 
+# ---------- Work time: Start / End / Total ----------
+
+def minutes(hhmm):
+    try:
+        h, m = (int(x) for x in str(hhmm).split(':')[:2])
+        return h * 60 + m if 0 <= h < 24 and 0 <= m < 60 else None
+    except ValueError:
+        return None
+
+
+def work_hours(start, end):
+    """(hours as a decimal, error). Both blank = no time logged. End must be after start."""
+    start, end = (start or '').strip(), (end or '').strip()
+    if not start and not end:
+        return None, None
+    a, b = minutes(start), minutes(end)
+    if a is None or b is None:
+        return None, 'Enter both a start and an end time, or leave both blank.'
+    if b <= a:
+        return None, 'The end time must be after the start time.'
+    return round((b - a) / 60, 2), None
+
+
+def hours(value):
+    """1.5 -> '1.50 hrs'."""
+    try:
+        return f'{float(value):.2f} hrs'
+    except (TypeError, ValueError):
+        return ''
+
+
+# ---------- Sortable table headers ----------
+
+def sort_header(key, label, default=None):
+    """A column header link: click to sort by this column, click again to reverse. Keeps the page's other filters."""
+    current = request.args.get('sort') or default
+    direction = request.args.get('dir', 'asc')
+    new_dir = 'desc' if (current == key and direction == 'asc') else 'asc'
+    args = {k: v for k, v in request.args.items() if k not in ('sort', 'dir', 'page')}
+    args.update(sort=key, dir=new_dir)
+    arrow = (' ▲' if direction == 'asc' else ' ▼') if current == key else ''
+    return Markup(f'<a class="sortlink" href="?{escape(urlencode(args))}">{escape(label)}{arrow}</a>')
+
+
+def order_by(columns, default, default_dir='asc'):
+    """SQL ORDER BY for the requested column (only names in `columns` are ever used)."""
+    key = request.args.get('sort') or default
+    if key not in columns:
+        key = default
+    direction = 'DESC' if request.args.get('dir', default_dir) == 'desc' else 'ASC'
+    return f'{columns[key]} {direction}'
+
+
 def register_formatting(app):
     app.jinja_env.filters['day'] = day
     app.jinja_env.filters['daytime'] = daytime
     app.jinja_env.filters['rich'] = rich
     app.jinja_env.filters['clock'] = clock
     app.jinja_env.filters['editor_value'] = editor_value
+    app.jinja_env.filters['hours'] = hours
+    app.jinja_env.globals['sort_header'] = sort_header

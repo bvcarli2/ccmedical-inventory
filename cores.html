@@ -542,13 +542,63 @@
         font-size: 12px;
         margin-top: 4px
       }
+      /* ---- v1.09: Start / End / Total time on ticket updates ---- */
+      .update-form .row-time {
+        display: grid;
+        grid-template-columns: 2fr 1.2fr 1fr 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 12px
+      }
+      .update-form .total-box {
+        border: 1px solid #dfe7ee;
+        background: #f6f9fb;
+        border-radius: 8px;
+        padding: 9px 11px;
+        font-weight: 700;
+        min-height: 20px
+      }
+      .adjust-form {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: flex-start
+      }
+      .adjust-form > * {
+        width: auto
+      }
+      .adjust-list {
+        list-style: none;
+        margin: 10px 0 0;
+        padding: 0;
+        font-size: 13px
+      }
+      .adjust-list li {
+        border-top: 1px solid #eef2f6;
+        padding: 8px 0
+      }
+      a.sortlink {
+        color: inherit;
+        text-decoration: none;
+        white-space: nowrap
+      }
+      a.sortlink:hover {
+        text-decoration: underline
+      }
+      @media(max-width:700px) {
+        .update-form .row-time,
+        .update-form .row3b {
+          grid-template-columns: 1fr 1fr
+        }
+      }
     </style>
   </head>
   <body>
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand">CC Medical<small>Inventory Workspace</small></div>
+        <a href="/" class="brandlink"><div class="brand">CC Medical<small>Inventory Workspace</small></div></a>
+        <!--search-->
         <div class="label">Inventory</div>
+        <a class="nav" href="/">Home</a>
         {% if can('receive') %}
           <a class="nav" href="/inventory/new">+ New Inventory</a>
         {% endif %}
@@ -558,8 +608,8 @@
         <a class="nav" href="/products">Product Database</a>
         <a class="nav active" href="/cores">Core Repairs (CR)</a>
         <a class="nav" href="/repairs">Customer Repairs</a>
-        <a class="nav" href="/?view=Active">Active Inventory</a>
-        <a class="nav" href="/?view=All">All Records</a>
+        <a class="nav" href="/inventory?view=Active">Active Inventory</a>
+        <a class="nav" href="/inventory?view=All">All Records</a>
       </aside>
       <div class="main">
         <header class="top">Core Repairs / Internal Repairs</header>
@@ -595,21 +645,22 @@
             <div class="panel">
               <h2>
                 {% if stage in stages %}{{stage}}{% elif stage=='all' %}All cores{% else %}Open cores{% endif %}
-                <span class="muted">· {{rows|length}} shown, oldest in status first ·
+                <span class="muted">· {{rows|length}} shown · click a column to sort ·
                   {% if stage %}<a href="/cores">open only</a>{% else %}<a href="/cores?stage=all">include converted</a>{% endif %}</span>
               </h2>
               <div class="tablewrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Core</th>
-                      <th>Product</th>
-                      <th>Serial</th>
-                      <th>Location</th>
-                      <th>Status</th>
-                      <th>In status</th>
-                      <th>Last update</th>
-                      {% if can('view_cost') %}<th>Total cost</th>{% endif %}
+                      <th>{{ sort_header('core', 'Core', 'in_status') }}</th>
+                      <th>{{ sort_header('product', 'Product', 'in_status') }}</th>
+                      <th>{{ sort_header('serial', 'Serial', 'in_status') }}</th>
+                      <th>{{ sort_header('location', 'Location', 'in_status') }}</th>
+                      <th>{{ sort_header('status', 'Status', 'in_status') }}</th>
+                      <th>{{ sort_header('in_status', 'In status', 'in_status') }}</th>
+                      <th>{{ sort_header('last', 'Last update', 'in_status') }}</th>
+                      <th>{{ sort_header('hours', 'Hours', 'in_status') }}</th>
+                      {% if can('view_cost') %}<th>{{ sort_header('cost', 'Total cost', 'in_status') }}</th>{% endif %}
                     </tr>
                   </thead>
                   <tbody>
@@ -626,10 +677,11 @@
                           {% else %}<span class="pill {{r.age}}">{{r.stage_days}} d</span>{% endif %}
                         </td>
                         <td>{{r.last_update|day if r.last_update else '—'}}</td>
+                        <td>{{'%.2f'|format(r.total_hours) if r.total_hours else '—'}}</td>
                         {% if can('view_cost') %}<td>${{'{:,.2f}'.format(r.original_cost + r.repair_cost)}}</td>{% endif %}
                       </tr>
                     {% else %}
-                      <tr><td colspan="8">No cores here.</td></tr>
+                      <tr><td colspan="9">No cores here.</td></tr>
                     {% endfor %}
                   </tbody>
                 </table>
@@ -663,6 +715,7 @@
                   {% elif detail.age=='hold' %}<span class="pill hold">On hold · {{detail.stage_days}} d</span>
                   {% else %}<span class="pill {{detail.age}}">{{detail.stage_days}} day{{'' if detail.stage_days==1 else 's'}}</span>{% endif %}
                 </strong>
+                <div class="muted">Time logged: {{total_hours|hours if total_hours else '0.00 hrs'}}</div>
               </div>
               {% if can('view_cost') %}
                 <div class="card">
@@ -707,7 +760,7 @@
                 <div class="panel">
                   <form method="post" action="/cores/{{detail.id}}/update" class="update-form">
                     <div class="who">Ticket update — <span class="signer">{{me}}</span></div>
-                    <div class="row3">
+                    <div class="row-time">
                       <div class="field">
                         {% if is_admin %}
                           <label>Technician</label>
@@ -727,9 +780,16 @@
                         <input name="work_date" type="date" value="{{today}}" required>
                       </div>
                       <div class="field">
-                        <label>Time worked on</label>
-                        <input name="work_time" type="time">
-                        <div class="hint">Optional</div>
+                        <label>Start</label>
+                        <input name="work_start" type="time" data-time="start">
+                      </div>
+                      <div class="field">
+                        <label>End</label>
+                        <input name="work_end" type="time" data-time="end">
+                      </div>
+                      <div class="field">
+                        <label>Total</label>
+                        <div class="total-box" data-time-total>—</div>
                       </div>
                     </div>
                     <div class="field">
@@ -765,13 +825,46 @@
               {% endif %}
             {% endif %}
 
+            {% if can('cost_adjust') or adjustments %}
+              <div class="panel">
+                <h2>Cost adjustments</h2>
+                {% if can('cost_adjust') and detail.stage!='Converted to Stock' %}
+                  <p class="muted" style="margin-top:0">Admins only. Corrects a recorded cost; the old and new amounts and your reason are kept here.</p>
+                  <form method="post" action="/adjust-cost" class="adjust-form">
+                    <input type="hidden" name="back" value="/cores/{{detail.id}}">
+                    <select name="pick" required>
+                      <option value="">What to adjust…</option>
+                      <option value="core:{{detail.id}}">Purchase cost (${{'{:,.2f}'.format(detail.original_cost)}})</option>
+                      {% for u in updates %}
+                        {% if u.parts_cost %}<option value="core_parts:{{u.id}}">Parts on {{u.work_date|day if u.work_date else u.performed_at|day}} — {{u.technician}} (${{'{:,.2f}'.format(u.parts_cost)}})</option>{% endif %}
+                        {% if u.other_cost %}<option value="core_other:{{u.id}}">Additional on {{u.work_date|day if u.work_date else u.performed_at|day}} — {{u.technician}} (${{'{:,.2f}'.format(u.other_cost)}})</option>{% endif %}
+                      {% endfor %}
+                    </select>
+                    <input name="amount" data-money inputmode="decimal" placeholder="New amount" required style="max-width:140px">
+                    <input name="reason" placeholder="Reason (required)" required style="flex:1;min-width:200px">
+                    <button>Save adjustment</button>
+                  </form>
+                {% elif can('cost_adjust') %}
+                  <p class="muted" style="margin-top:0">This core is stock now. Adjust the stock item's cost instead.</p>
+                {% endif %}
+                <ul class="adjust-list">
+                  {% for a in adjustments %}
+                    <li><strong>{{a.label}}:</strong> {{'${:,.2f}'.format(a.old_value) if a.old_value is not none else '—'}} → {{'${:,.2f}'.format(a.new_value)}}
+                      <div class="muted">{{a.at|daytime}} · {{a.actor}} · {{a.reason}}</div></li>
+                  {% else %}
+                    <li class="muted">No adjustments.</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+
             <div class="panel">
               <h2>Updates <span class="muted">· newest first</span></h2>
               <ul class="updates">
                 {% for u in updates %}
                   <li>
                     <div class="meta">
-                      <strong>{{u.work_date|day if u.work_date else u.performed_at|day}}</strong>{% if u.work_time %} · worked at {{u.work_time|clock}}{% endif %}
+                      <strong>{{u.work_date|day if u.work_date else u.performed_at|day}}</strong>{% if u.work_start %} · {{u.work_start|clock}}–{{u.work_end|clock}} ({{u.hours|hours}}){% elif u.work_time %} · worked at {{u.work_time|clock}}{% endif %}
                       · posted {{u.performed_at|daytime}}
                       {% if u.new_stage %} · <span class="pill">{{u.old_stage}} → {{u.new_stage}}</span>{% endif %}
                     </div>
