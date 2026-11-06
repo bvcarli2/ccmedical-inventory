@@ -1,8 +1,192 @@
 # CC Medical Inventory
 
-Internal inventory system for CC Medical: stock (CC), cores (CR), customer repairs (RP), and the master product database. Built with Flask and SQLite.
+Internal web app for tracking CC Medical's ultrasound equipment: stock, cores, customer repairs, clients and the product catalog. Built with Python (Flask) and one SQLite database file.
 
-Every page requires a staff login. Admins can add users, reset passwords, manage the product database, and download database backups.
+**Status: sandbox.** This repo (`SGccmed/ccmed-inv-sandbox`, forked from `bvcarli2/ccmedical-inventory`) runs on Render's free plan with fake demo data. Real data waits until we move to a paid plan (see the last section).
+
+## What's in the app
+
+The **home page** (click **CC Medical** at the top left of any page) has a big search bar, quick links, counts of what's waiting on you, your **Favorites** (☆ Favorite at the top right of any page) and the records you opened recently.
+
+| Area | What it tracks | ID format |
+|---|---|---|
+| Stock (CC) | Units we own: shelf location, cost, status | `CC-MMDDYY-###` |
+| Cores (CR) | Broken units we're fixing to sell, worked through ticket updates; converts to stock when ready | `CR-MMDDYY-###` |
+| Customer repairs (RP) | Repair tickets for customer units, run like a helpdesk: 14 stages, team queues, work log | `RP-MMDDYY-###` + RMA # |
+| Clients | Customer accounts, contacts, activity log, repair history | `CL-00001` |
+| Product Database | Master list of systems, probes and parts | — |
+| Users | Staff logins and roles | username |
+
+Every page needs a staff login. Serial numbers are **not** unique keys: a matching serial anywhere shows an alert but never blocks saving, because different manufacturers can share serials.
+
+## Files
+
+| File | What it does |
+|---|---|
+| `app.py` | Main app: stock list (`/inventory`), receiving, backup/restore, spreadsheet import |
+| `home.py`, `home.html` | Home page: search, work tiles, favorites and recent pages |
+| `costs.py` | Cost adjustments (Admins): corrects a cost or quoted price with a required reason, keeps the history |
+| `cores.py` | Core repairs: ticket updates, statuses, costs, converting to stock |
+| `formatting.py` | Pacific-time dates ("Oct 30, 2026"), safe display of rich text notes, work hours, sortable column headers |
+| `page_tools.html` | Added to every page: rich text editor, red warning on negative costs, Start/End time totals, the ☆ Favorite button |
+| `trix.js`, `trix.css` | Trix rich text editor (open source, MIT licence, by 37signals), served by the app itself |
+| `repairs.py` | Customer repair tickets: the stages, who can move each one, queues, work log |
+| `search.py` | Search across clients, tickets, stock and cores |
+| `search_box.html` | The search box shown at the top of every sidebar |
+| `salesforce.py` | Linking clients to their Salesforce Account IDs (CSV import) |
+| `auth.py` | Logins, roles and permissions (`PERMISSIONS`), the Users page, loading accounts from `users.env` |
+| `clients.py` | Clients pages (their HTML is inside this file) |
+| `product_database.py` | Product Database pages (their HTML is inside this file) |
+| `dashboard.html` | Stock list and single-item page |
+| `inventory_entry.html` | + New Inventory receiving form |
+| `repairs.html` | Repair queue, new ticket and ticket pages |
+| `cores.html` | Core list and core page (ticket updates) |
+| `seed_demo.py` | Builds `demo_inventory.db` with fake test data |
+| `wsgi.py` | Starting point Render uses to launch the app |
+| `requirements.txt` | Python packages: Flask, openpyxl, gunicorn, tzdata (time zones), nh3 (cleans rich text) |
+| `render.yaml` | **Not used yet.** Settings for the future paid Render plan |
+| `.gitignore` | Keeps the database, secrets and spreadsheets out of GitHub |
+
+## Staff roles
+
+Each account has one or more roles. The full rules are in `PERMISSIONS` in `auth.py` and are checked on the server for every action.
+
+- **SuperAdmin**: everything, plus Admin accounts, database backup and restore.
+- **Admin**: all inventory, clients, catalog and settings, linking clients to Salesforce. Manages Sales, Shipping and Technician accounts.
+- **Sales**: clients, repair tickets, repair pricing and approvals, inventory lookups and purchase costs.
+- **Shipping**: receiving, shelf moves, repair tickets, and shipping repairs back (Ready to Ship to Shipped).
+- **Technician**: repair evaluation and repair work, ticket updates on repairs and cores (can enter parts costs but not see amounts), shelf moves, opening their own repair tickets (assigned to themselves). Can read the Product Database, Active and All lists, but has no Sold, Loaners or Rental lists; a single record still opens from search results or a serial alert. On a repair ticket a technician edits eval findings, location, assignment and updates; serial, model, part number, manufacturer, client and RMA corrections are for Shipping, Sales or Admin. No costs or prices.
+
+**View as (SuperAdmin):** the *View as…* menu at the bottom of the sidebar shows the app exactly as an Admin, Sales, Shipping or Technician account would see it. A yellow box shows while it's on; *Back to SuperAdmin* switches back.
+
+There is always at least one active SuperAdmin, and nobody can change their own access.
+
+## Repair tickets
+
+Each customer repair is a ticket with one owner at each stage, like an IT helpdesk. The stage tells you whose turn it is, and each team has its own queue.
+
+| Stage | Whose turn | Next |
+|---|---|---|
+| Received | Repair team | In Evaluation, or At Partner |
+| In Evaluation | Repair team | Eval Complete, or Unrepairable |
+| Eval Complete | Sales (adds pricing) | Awaiting Approval (warranty tickets go straight to Approved) |
+| Awaiting Approval | Sales (on hold) | Approved, or Declined |
+| Approved | Repair team | In Repair, or At Partner |
+| In Repair | Repair team | Repair Complete, Waiting on Parts, or Unrepairable |
+| Waiting on Parts | Repair team (on hold) | In Repair |
+| Repair Complete | Sales | Ready to Ship |
+| Ready to Ship | Shipping | Shipped |
+| Shipped | Admin (invoice) | Closed |
+| Closed | — | Admin can reopen |
+| At Partner | Sales (on hold) | Eval Complete, Ready to Ship, or Shipped |
+| Declined | Sales | Ready to Ship (returned free) |
+| Unrepairable | Sales | Closed (exchanged), or Ready to Ship |
+
+- **Moving a ticket:** only the team whose turn it is can move it on; Admins can move any ticket anywhere. Every move, update and edit goes in the ticket's work log with who and when.
+- **Ticket updates:** day worked on, Start and End time (the Total in hours fills in by itself, e.g. 1.75 hrs), the update in rich text, parts cost and additional cost. All except the text are optional. The ticket shows the total time logged.
+- **The queue** can be sorted by any column (click the header; click again to reverse). It opens longest-in-stage first and has a Received date column.
+- **On hold** stages don't turn yellow or red.
+- **RMA numbers** are created automatically (RMA-10001, ...) if left blank; the field can also hold a partner's RMA.
+- **Closed tickets** record a resolution: Repaired, Warranty, Declined, Exchanged, or Returned unrepaired.
+- **My tickets** shows repairs assigned to you plus repairs for clients you own as sales rep. The Sales rep and Assigned tech filters show anyone else's.
+- Databases from before v1.05 are upgraded automatically: Open Repairs becomes Received, Evaled becomes Eval Complete, QC becomes In Repair, Completed becomes Closed.
+
+## Core repairs
+
+A core is worked like a ticket. Technicians post **ticket updates**: the day worked on (today by default), optional Start and End times (Total in hours is worked out for you), the update itself in a rich text box (bold, numbered and bulleted lists), parts cost, additional cost, and a status change. Updates are signed with the technician's name automatically; Admins can post on a technician's behalf.
+
+| Status | Meaning |
+|---|---|
+| Needs Repair | Waiting for a technician |
+| In Repair | Being worked on |
+| Waiting on Parts | On hold until parts arrive (doesn't age) |
+| On Hold | Paused for another reason, including cores we can't fix right now (doesn't age) |
+| Ready for Stock | Fixed and tested; the update that sets it is the QC sign-off |
+| Converted to Stock | An Admin converted it into a CC stock item carrying the full cost |
+
+The core list can be sorted by any column and shows hours logged. Technicians can enter costs but never see amounts or totals; the cost summary is for Sales, Admin and SuperAdmin. Cores in the old QC status become In Repair automatically.
+
+## Notes and costs
+
+- **Rich text:** every note and description box (ticket updates, repair intake notes, eval findings, client notes and activity, product descriptions and requests) is a rich text editor. Ctrl+B / Ctrl+I work, and numbered or bulleted lists continue when you press Enter. Notes are stored as HTML and cleaned of anything unsafe every time they're shown. Older plain-text notes still display normally.
+- **Adjusting a cost (Admin, SuperAdmin):** a stock item's cost, a core's purchase cost, the parts or additional cost on one core update, and a repair's quoted price can each be corrected on the record's page. A reason is required; the old and new amounts, who and when are listed under **Cost adjustments** (Sales and Admins see it; technicians don't). A converted core is adjusted through its stock item.
+- **Sorting:** the stock list, repair queue and core list sort by clicking a column header.
+- **Costs:** a negative or non-numeric cost turns the field red with a warning and greys out the form's submit button until it's fixed. The server also refuses negative costs.
+
+## Dates
+
+Every date is shown in Pacific time as **Oct 30, 2026**; work logs and updates add the time (**Oct 30, 2026 · 2:15 PM**). Dates are stored in UTC.
+
+## Search
+
+The box at the top of every sidebar searches clients (name, CL- number, Salesforce ID, phone, email), repair tickets (ticket, RMA, serial, client, model), stock and cores. Serials match with or without spaces.
+
+- **Suggestions** appear as you type; use the arrow keys and Enter, or click one.
+- **Enter** with nothing highlighted runs the full search. If only one record matches, or one matches exactly (a full ticket number, serial or CL- number), it opens that record directly with a note saying so.
+- **Several matches** (for example "San Diego") open a results page grouped into clients, repair tickets, stock and cores. "See all results" at the bottom of the suggestions always shows that page.
+- Technicians don't see clients in search, matching their other permissions.
+
+## Clients and Salesforce
+
+Salesforce stays the system for clients, contacts and tasks; this app owns inventory and repairs. Each client keeps its own CL- number and also stores its **Salesforce Account ID** (15 or 18 letters and digits, starting with 001). The ID must be unique per client.
+
+- **One at a time:** Clients → open a client → Edit → *Salesforce account ID*.
+- **In bulk (Admins):** Clients → **Link to Salesforce** (also in Product Database → Admin Mode). Upload a Salesforce report exported as CSV with **Account Name** and **Account ID** columns. The preview shows which clients will be linked, which are already linked, IDs that would change, names with no match, and bad rows. Nothing is saved until you click *Link selected clients*. Each link is recorded in the client's history.
+- **Open in Salesforce:** set `CCM_SALESFORCE_URL` (for example `https://yourcompany.lightning.force.com`) and each linked client page gets an *Open in Salesforce* link.
+- Keep real client lists off the free sandbox. The demo data has fake IDs (`001DM…`), and `salesforce_demo_export.csv` is a fake export for testing the import.
+
+## How the live site works (Render free plan)
+
+GitHub is the master copy of the code. Render rebuilds the site automatically every time a change is committed to `main`.
+
+### Updating the site
+
+1. On GitHub, open the repo and choose **Add file → Upload files**.
+2. Drag in the changed files (they replace the old ones) and commit to `main`.
+3. In Render, watch the deploy log until it shows gunicorn "Listening" (a few minutes).
+
+### Render settings
+
+The service was created with **New → Web Service** (not Blueprint, because `render.yaml` asks for a paid plan).
+
+| Setting | Value |
+|---|---|
+| Instance type | Free |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `gunicorn wsgi:application --workers 1 --threads 4 --timeout 120` |
+| Health check path | `/healthz` |
+| Environment variables | `PYTHON_VERSION` = `3.12.7`, `CCM_SECRET` = a long random string |
+| Secret File | `users.env` (staff accounts, see below) |
+
+Leave `CCM_DB_PATH` unset on the free plan. Once `users.env` is in place, remove `CCM_INITIAL_ADMIN_USER` and `CCM_INITIAL_ADMIN_PASSWORD` if they're still set.
+
+### Free plan limits: data gets wiped
+
+The free plan has no permanent disk. After about 15 idle minutes the site sleeps, and the database is erased on wake-up and on every deploy.
+
+- **Staff logins** come back automatically from `users.env`.
+- **Demo data** must be re-uploaded: sign in as SuperAdmin, go to `/admin/restore` and upload `demo_inventory.db`.
+- **Favorites, recent pages and cost adjustments** are in the database too, so they reset with it.
+
+Never enter real client or inventory data while on the free plan.
+
+### Staff accounts file (`users.env`)
+
+Add it in Render under **Environment → Secret Files**. The app reads `/etc/secrets/users.env` (or the path in `CCM_USERS_FILE`). One line per person:
+
+```
+CCM_USER_<LABEL>=username | Roles | password | Full name
+```
+
+Example: `CCM_USER_SHIP=shipping | Shipping | a-long-password | Pat Lee`. Several roles are separated with commas. Accounts are only created, never changed, and lines whose password still says `CHANGE_ME` are skipped. Passwords need at least 10 characters. Never commit this file to GitHub.
+
+## Demo data
+
+```
+python seed_demo.py
+```
+
+This builds `demo_inventory.db`: 67 stock items, 8 cores, 21 repair tickets (every stage and path), 11 clients and 28 products, all fake. It has no user accounts, so restoring it keeps the current logins.
 
 ## Run it on your own computer (Windows)
 
@@ -11,63 +195,44 @@ Every page requires a staff login. Admins can add users, reset passwords, manage
    ```
    pip install -r requirements.txt
    ```
-3. Create your first admin account (it will ask for a password, at least 10 characters):
+3. Create your first account (a SuperAdmin; it asks for a password of 10+ characters):
    ```
    python app.py create-admin yourname
    ```
-4. Start the app and open http://127.0.0.1:5000 in your browser:
+4. Start the app, then open http://127.0.0.1:5000:
    ```
    python app.py
    ```
 
-To import the existing inventory spreadsheet (sheet named "Location"):
+To import an existing inventory spreadsheet (sheet named "Location"):
+
 ```
 python app.py import "C:\path\to\inventory.xlsx"
 ```
 
-## Put it on the web with Render and Cloudflare
-
-The app runs on Render. Its database lives on a Render **persistent disk**, because Render erases everything else on each restart or deploy. Persistent disks need a paid instance (the `starter` plan in `render.yaml`). On the free plan, your data would be lost.
-
-### 1. Create the service on Render
-
-1. In Render, click **New → Blueprint** and connect the `bvcarli2/ccmedical-inventory` repository. Render reads `render.yaml` and sets up the web service, the disk, and the settings.
-2. Render asks for two values:
-   - `CCM_INITIAL_ADMIN_USER`: your username, e.g. `bvcarli2`
-   - `CCM_INITIAL_ADMIN_PASSWORD`: a strong password, at least 10 characters
-3. Click **Apply**. When the deploy finishes, open the `https://ccmedical-inventory.onrender.com` address Render shows (yours may differ slightly) and sign in.
-4. Change your password under **Change password** in the sidebar. You can then delete the two `CCM_INITIAL_ADMIN_...` values on the service's **Environment** page; they're only used while the site has no users.
-
-### 2. Move your existing data over
-
-1. Sign in as admin and go to **Product Database → Admin Mode → Restore from a backup**.
-2. Upload the `inventory.db` file from the app folder on your computer.
-3. The site downloads a safety copy of what it had before, then switches to your data. Your login is kept.
-
-### 3. Use your own domain through Cloudflare
-
-1. In Render, open the service, go to **Settings → Custom Domains**, and add the address you want, e.g. `inventory.yourcompany.com`.
-2. In Cloudflare, open your domain's **DNS** page and add a **CNAME** record: name `inventory`, target the `...onrender.com` address from Render.
-3. Set the record to **DNS only** (grey cloud) until Render shows the domain as verified and its certificate as issued.
-4. After that you can switch it to **Proxied** (orange cloud) if you want Cloudflare's protection. If you do, set Cloudflare's **SSL/TLS** mode for the domain to **Full (strict)**.
-
-### Updating the live site
-
-Upload changed files to GitHub. Render redeploys automatically, and the data on the disk is untouched.
-
 ## Backups
 
-Admins can download a full copy of the database from **Product Database → Admin Mode → Download database backup**. Do this regularly and keep copies somewhere safe; Render also takes daily snapshots of the disk. The live database is never stored on GitHub.
+A SuperAdmin can download the whole database from **Product Database → Admin Mode → Download database backup**, and replace it at `/admin/restore`. The restore page downloads a safety copy of the current data first.
 
-## Settings (optional environment variables)
+## Optional settings (environment variables)
 
 | Variable | What it does |
 |---|---|
-| `CCM_DB_PATH` | Where the database file lives (default: `inventory.db` in this folder) |
-| `CCM_SECRET` | Session signing key. If not set, a random one is created once and saved as `.secret_key` next to the database |
-| `CCM_INITIAL_ADMIN_USER` / `CCM_INITIAL_ADMIN_PASSWORD` | Creates the first admin account when the site has no users yet |
-| `CCM_SECURE_COOKIES` | `1` (default) sends login cookies only over HTTPS. `python app.py` turns this off automatically for local use |
+| `CCM_SECRET` | Key that signs login sessions. Set it on Render so logins survive restarts |
+| `CCM_DB_PATH` | Where the database file lives (default: `inventory.db` next to `app.py`) |
+| `CCM_USERS_FILE` | Where to find `users.env` (default: `/etc/secrets/users.env`) |
+| `CCM_INITIAL_ADMIN_USER` / `CCM_INITIAL_ADMIN_PASSWORD` | Creates a first SuperAdmin when the site has no users |
+| `CCM_SALESFORCE_URL` | Your Salesforce address, e.g. `https://yourcompany.lightning.force.com`; adds *Open in Salesforce* links on client pages |
+| `CCM_SECURE_COOKIES` | `1` (default) sends login cookies only over HTTPS. `python app.py` turns this off for local use |
 
 ## What stays off GitHub
 
-`.gitignore` keeps the database, the secret key, and all spreadsheets (`.xlsx`, `.csv`) out of the repository, so company data isn't published even though the repo is public.
+The repo is public, so `.gitignore` keeps out the database (`*.db`), the secret key, `users.env`, and all spreadsheets (`.xlsx`, `.xls`, `.csv`).
+
+## Later: moving to a paid plan
+
+Before real data goes in, the site moves to a paid Render plan with a permanent disk. `render.yaml` already describes that setup (Starter plan, 1 GB disk at `/var/data`, database at `/var/data/inventory.db`). At that point:
+
+1. Create the service from **New → Blueprint** using `render.yaml`, or add a disk to the existing service and set `CCM_DB_PATH=/var/data/inventory.db`.
+2. Restore the real data at `/admin/restore`.
+3. Optionally add a custom domain through Cloudflare: a CNAME record pointing to the `onrender.com` address, set to DNS only until Render verifies it.

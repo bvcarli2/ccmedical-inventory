@@ -1,0 +1,278 @@
+"""Build a demo database full of FAKE test data.
+
+Usage (from the app folder):
+    python seed_demo.py                 -> creates demo_inventory.db
+    python seed_demo.py my_demo.db      -> creates my_demo.db
+
+The file has no user accounts, so uploading it through Admin -> Restore database
+on the live site keeps your existing logins. All customers, serial numbers, RMAs,
+costs and OEM part numbers here are invented for testing.
+"""
+import os, sys, random, sqlite3
+from datetime import datetime, timedelta, timezone, date
+from pathlib import Path
+
+out = Path(sys.argv[1] if len(sys.argv) > 1 else 'demo_inventory.db').resolve()
+if out.exists():
+    print(f'{out.name} already exists; delete it first or choose another name.'); sys.exit(1)
+
+# Point the app at the new file so its own schema code builds every table.
+os.environ['CCM_DB_PATH'] = str(out)
+os.environ.setdefault('CCM_SECRET', 'seed-only')  # don't write a .secret_key file
+os.environ.pop('CCM_INITIAL_ADMIN_USER', None); os.environ.pop('CCM_INITIAL_ADMIN_PASSWORD', None)
+for _k in [k for k in os.environ if k.startswith('CCM_USER_')]: os.environ.pop(_k)
+os.environ['CCM_USERS_FILE'] = os.devnull   # demo file must never contain accounts
+import app as A                      # runs init_db(): units, repairs, cores, users tables
+import product_database as P
+
+rnd = random.Random(42)              # same data every run
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
+def ts(days_ago, hours=0): return (NOW - timedelta(days=days_ago, hours=hours)).isoformat()
+def d(days_ago): return (NOW - timedelta(days=days_ago)).date().isoformat()
+
+c = A.conn()
+c.executescript(P.SCHEMA)
+for code, label in [('SYS','Ultrasound Systems'),('PRB','Ultrasound Probes'),('PTS','Parts / Accessories')]:
+    c.execute('INSERT OR IGNORE INTO product_categories(code,label) VALUES (?,?)', (code, label))
+for name in ['GE','Philips','Siemens','Canon/Toshiba','Samsung','Mindray','Fujifilm/SonoSite']:
+    c.execute('INSERT OR IGNORE INTO product_manufacturers(name) VALUES (?)', (name,))
+
+# ---------- Master product catalog ----------
+SYSTEMS = [('GE','LOGIQ E10'),('GE','Vivid E95'),('GE','Voluson E8'),('Philips','EPIQ 7'),('Philips','Affiniti 70'),
+           ('Siemens','ACUSON Sequoia'),('Canon/Toshiba','Aplio i800'),('Samsung','RS85'),('Mindray','Resona 7'),('Fujifilm/SonoSite','Edge II')]
+PROBES = [('GE','C1-6-D',[0,2]),('GE','ML6-15-D',[0]),('GE','M5Sc-D',[1]),('Philips','C5-1',[3,4]),('Philips','eL18-4',[3]),
+          ('Philips','X5-1',[3,4]),('Siemens','5C1',[5]),('Canon/Toshiba','PVI-475BX',[6]),('Samsung','CA1-7A',[7]),
+          ('Mindray','SC5-1U',[8]),('Fujifilm/SonoSite','rC60xi',[9]),('Fujifilm/SonoSite','HFL50xp',[9])]
+PARTS = [('GE','LOGIQ Keyboard Assembly'),('Philips','EPIQ Power Supply'),('Siemens','Probe Port Connector'),
+         ('Fujifilm/SonoSite','Edge II Battery'),('GE','Trackball Assembly'),('Philips','Touchscreen Panel')]
+prod_ids = {}
+def add_product(cat, mfg, model, status):
+    name = f'{mfg} {model}'
+    pid = c.execute('INSERT INTO products(category,manufacturer,model,display_name,short_description,technical_specs,review_notes,review_status) VALUES (?,?,?,?,?,?,?,?)',
+        (cat, mfg, model, name, f'DEMO DATA: placeholder description for {name}.', 'DEMO DATA: specs not researched.',
+         'Fake test record', status)).lastrowid
+    pn = f'DEMO-{rnd.randint(100000,999999)}'
+    c.execute('INSERT INTO product_part_numbers(product_id,part_number,verification) VALUES (?,?,?)', (pid, pn, 'Pending Verification'))
+    c.execute('INSERT INTO product_audit(product_id,action,old_value,new_value,actor,created_at) VALUES (?,?,?,?,?,?)',
+              (pid, 'Demo seed', '', name, 'seed_demo', ts(30)))
+    prod_ids[name] = pid; return pid
+sys_ids = [add_product('SYS', m, x, 'Approved' if i % 3 else 'Pending Review') for i, (m, x) in enumerate(SYSTEMS)]
+for i, (m, x, compat) in enumerate(PROBES):
+    pid = add_product('PRB', m, x, 'Approved' if i % 4 else 'Pending Review')
+    for s in compat: c.execute('INSERT INTO product_compatibility(probe_id,system_id) VALUES (?,?)', (pid, sys_ids[s]))
+for m, x in PARTS: add_product('PTS', m, x, 'Pending Review')
+c.execute('INSERT INTO product_requests(category,manufacturer,model,notes,request_type,created_at) VALUES (?,?,?,?,?,?)',
+          ('PRB','Mindray','L14-6WU','Demo request: seen on incoming trade-in','New Product', ts(2)))
+
+# ---------- Shared inventory ID sequence (CC / CR / RP) ----------
+def new_code(prefix, days_ago):
+    cur = c.execute('INSERT INTO inventory_id_sequence(prefix,created_at) VALUES (?,?)', (prefix, ts(days_ago)))
+    code = f"{prefix}-{(NOW - timedelta(days=days_ago)).strftime('%m%d%y')}-{cur.lastrowid:03d}"
+    c.execute('UPDATE inventory_id_sequence SET generated_id=? WHERE seq=?', (code, cur.lastrowid)); return code
+def serial(): return 'DM' + ''.join(rnd.choice('ABCDEFGHJKLMNPRSTUVWXYZ0123456789') for _ in range(8))
+SHELVES = [f'{r}{n}' for r in 'ABCD' for n in range(1, 6)]
+SUPPLIERS = ['Demo Medical Brokers', 'Sample Imaging Supply', 'Test Trade-In Co.', 'Placeholder Auctions']
+ALL_MODELS = [(m, x, 'SYS') for m, x in SYSTEMS] + [(m, x, 'PRB') for m, x, _ in PROBES] + [(m, x, 'PTS') for m, x in PARTS]
+def price(cat): return {'SYS': rnd.randrange(8000, 45000, 250), 'PRB': rnd.randrange(900, 7500, 50), 'PTS': rnd.randrange(80, 1800, 10)}[cat]
+
+# ---------- Legacy units (as if imported from the old Excel "Location" sheet) ----------
+LEGACY_LOCS = (['A1','A2','B3','C4','D1','B1/R2','A5','C2'] * 4) + ['SOLD']*6 + ['RENTAL']*3 + ['LOANER']*2 + ['PENDING']*2 + ['BACK ROOM','?']
+for row, loc in enumerate(LEGACY_LOCS, start=3):
+    m, x, cat = rnd.choice(ALL_MODELS)
+    tag = rnd.choice(['', '', ' NEW', ' REFURB'])
+    product = f'{m} {x}{tag}'
+    s = serial() if rnd.random() > 0.08 else ''
+    cost = None if rnd.random() < 0.07 else float(price(cat))
+    status, physical = A.classify(loc)
+    issues = []
+    if not s: issues.append('Missing serial')
+    if status == 'Needs review': issues.append('Unrecognized location/status')
+    if status == 'Pending review': issues.append('Pending status')
+    if cost is None: issues.append('Missing cost')
+    cond = 'New (inferred)' if 'NEW' in product else 'Refurbished (inferred)' if 'REFURB' in product else 'Unspecified'
+    c.execute('INSERT INTO units(source_sheet,source_row,manufacturer,product_raw,product_key,serial,cost,dom,notes,location_raw,physical_location,status,condition,review) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        ('Location', row, None, product, A.norm(product), s, cost, str(rnd.randint(2015, 2024)), 'Demo legacy record', loc, physical, status, cond, '; '.join(issues)))
+# One duplicate serial so the review flag shows up
+dup = c.execute("SELECT serial FROM units WHERE serial<>'' LIMIT 1").fetchone()[0]
+c.execute("UPDATE units SET serial=? WHERE id=(SELECT MAX(id) FROM units WHERE status='Active')", (dup,))
+c.execute("UPDATE units SET review=TRIM(COALESCE(review,'')||'; Duplicate serial (verify)','; ') WHERE serial=?", (dup,))
+
+# ---------- New receiving batches (CC stock) ----------
+for b_days in (45, 21, 9, 2):
+    n = rnd.randint(3, 6)
+    batch = c.execute('INSERT INTO receiving_batches(created_at,item_count) VALUES (?,?)', (ts(b_days), n)).lastrowid
+    for _ in range(n):
+        m, x, cat = rnd.choice(ALL_MODELS); shelf = rnd.choice(SHELVES)
+        c.execute('INSERT INTO units(manufacturer,product_raw,product_key,serial,cost,dom,notes,location_raw,physical_location,status,condition,review,inventory_code,supplier,received_date,entry_batch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (m, f'{m} {x}', A.norm(f'{m} {x}'), serial(), float(price(cat)), '', 'Demo receiving', shelf, shelf, rnd.choice(['Active']*5+['Rental']),
+             rnd.choice(['New','Refurbished','Used - Good']), '', new_code('CC', b_days), rnd.choice(SUPPLIERS), d(b_days), batch))
+
+# Location transfers and internal repair orders on some active units
+active = [r[0] for r in c.execute("SELECT id FROM units WHERE status='Active' ORDER BY id")]
+for uid in rnd.sample(active, 10):
+    old = c.execute('SELECT physical_location FROM units WHERE id=?', (uid,)).fetchone()[0]; new = rnd.choice(SHELVES)
+    c.execute('INSERT INTO movements(unit_id,old_location,new_location,created_at,note) VALUES (?,?,?,?,?)',
+              (uid, old, new, (NOW - timedelta(days=rnd.randint(1, 40))).strftime('%Y-%m-%d %H:%M:%S'), 'Demo shelf reorganization [seed_demo]'))
+    c.execute('UPDATE units SET physical_location=? WHERE id=?', (new, uid))
+for uid in rnd.sample(active, 4):
+    c.execute('INSERT INTO repair_orders(unit_id,repair_type,status,notes) VALUES (?,?,?,?)',
+              (uid, rnd.choice(['Internal refurbishment','Customer repair']), rnd.choice(['Open','Closed']), 'Demo repair order [seed_demo]'))
+
+# ---------- Customer repair tickets (RP) across every stage and path ----------
+import repairs as R
+CUSTOMERS = ['Demo Valley Imaging', 'Sample Regional Hospital', 'Test Women\'s Clinic', 'Placeholder Cardiology Group',
+             'Example Vet Hospital', 'Fictional Ortho Partners', 'Mock Urgent Care', 'Pretend Mobile Ultrasound']
+TECHS = ['Tech A', 'Tech B', 'Tech C']          # free-text names used on the demo cores
+STANDARD = ['Received', 'In Evaluation', 'Eval Complete', 'Awaiting Approval', 'Approved', 'In Repair',
+            'Repair Complete', 'Ready to Ship', 'Shipped', 'Closed']
+PATHS = {
+    'standard': STANDARD,
+    'parts': STANDARD[:6] + ['Waiting on Parts'],
+    'warranty': ['Received', 'In Evaluation', 'Eval Complete', 'Approved', 'In Repair', 'Repair Complete',
+                 'Ready to Ship', 'Shipped', 'Closed'],
+    'declined': ['Received', 'In Evaluation', 'Eval Complete', 'Awaiting Approval', 'Declined', 'Ready to Ship',
+                 'Shipped', 'Closed'],
+    'exchange': ['Received', 'In Evaluation', 'Unrepairable', 'Closed'],
+    'outsourced': ['Received', 'At Partner', 'Eval Complete', 'Awaiting Approval', 'Approved', 'At Partner'],
+}
+# (path, how far along it gets, days in the final stage)
+plan = [('standard', 'Received', 1), ('standard', 'Received', 5), ('standard', 'In Evaluation', 2),
+        ('standard', 'In Evaluation', 6), ('standard', 'Eval Complete', 1), ('standard', 'Awaiting Approval', 9),
+        ('standard', 'Approved', 2), ('standard', 'In Repair', 4), ('standard', 'In Repair', 11),
+        ('parts', 'Waiting on Parts', 6), ('standard', 'Repair Complete', 1), ('standard', 'Ready to Ship', 2),
+        ('standard', 'Shipped', 3), ('standard', 'Closed', 0), ('standard', 'Closed', 0),
+        ('declined', 'Declined', 1), ('declined', 'Closed', 0), ('exchange', 'Unrepairable', 2),
+        ('exchange', 'Closed', 0), ('outsourced', 'At Partner', 8), ('warranty', 'Eval Complete', 1)]
+FINDINGS = ['Two dead elements near the center of the array', 'Lens delaminated; needs relensing',
+            'Cable conductor break near strain relief', 'Connector pins bent; housing cracked']
+closed_std = []
+for i, (path_name, stop, stage_days) in enumerate(plan, start=1):
+    m, x, cat = rnd.choice([t for t in ALL_MODELS if t[2] != 'PTS'])
+    path = PATHS[path_name][:PATHS[path_name].index(stop, 2 if path_name == 'outsourced' and stop == 'At Partner' else 0) + 1]
+    received = stage_days + len(path) * rnd.randint(1, 3) + rnd.randint(0, 2)
+    whens = [ts(round(received - (received - stage_days) * k / max(1, len(path) - 1))) for k in range(len(path))]
+    sn = serial()
+    if path_name == 'warranty' and closed_std:      # same serial as an earlier, closed repair
+        sn, m, x = c.execute('SELECT serial, manufacturer, model FROM customer_repairs WHERE id=?', (closed_std[0],)).fetchone()
+    rid = R.create_ticket(c, client={'id': None, 'name': rnd.choice(CUSTOMERS)}, rma=f'RMA-DEMO-{1000 + i}',
+                          received=d(received), code=new_code('RP', received), when=whens[0], note='Demo ticket created',
+                          fields={'manufacturer': m, 'model': x, 'serial': sn, 'location': rnd.choice(['R1', 'R2', 'R3']),
+                                  'notes': rnd.choice(['Image dropout on elements', 'Cracked lens', 'Will not power on',
+                                                       'Cable strain relief torn', 'Intermittent connector fault'])})
+    upd = {}
+    if len(path) > 1 and path[1] != 'At Partner':
+        upd['assigned_to'] = 'repair'                # the Technician test account
+    if 'Eval Complete' in path or 'Unrepairable' in path:
+        upd['eval_findings'] = rnd.choice(FINDINGS)
+    if 'Awaiting Approval' in path:
+        upd['quoted_price'] = float(rnd.randrange(350, 2600, 25)); upd['estimate_number'] = f'EST-DEMO-{rnd.randint(1000, 9999)}'
+    if path_name == 'warranty':
+        upd['warranty'] = 1; upd['warranty_of_id'] = closed_std[0] if closed_std else None; upd['quoted_price'] = 0.0
+    if path_name == 'standard' and stop == 'Closed':
+        upd['invoice_number'] = f'INV-DEMO-{rnd.randint(1000, 9999)}'
+    if upd:
+        c.execute('UPDATE customer_repairs SET ' + ', '.join(f'{k}=?' for k in upd) + ' WHERE id=?', [*upd.values(), rid])
+    for stage, when in zip(path[1:], whens[1:]):
+        row = c.execute('SELECT * FROM customer_repairs WHERE id=?', (rid,)).fetchone()
+        R.move_ticket(c, row, stage, 'Demo stage change', when=when)
+        if stage == 'Waiting on Parts':
+            R.log(c, rid, 'note', 'Ordered replacement lens from Demo Parts Co., expected Friday', when=when)
+        if stage == 'Shipped':
+            R.log(c, rid, 'note', f'Shipped UPS Ground, tracking 1ZDEMO{rnd.randint(100000, 999999)}', when=when)
+        if stage == 'At Partner':
+            R.log(c, rid, 'note', 'Sent to Demo Probe Partners; partner RMA PR-DEMO-77', when=when)
+        if stage in ('Eval Complete', 'Repair Complete'):     # the tech's ticket update, with time worked
+            start, end, hrs = rnd.choice([('09:00', '10:30', 1.5), ('13:15', '14:00', 0.75), ('10:00', '12:15', 2.25)])
+            text = ('1. Element test and visual check\n2. Found: ' + rnd.choice(FINDINGS) if stage == 'Eval Complete'
+                    else 'Repair done.\n- Element test: all pass\n- Image test on a demo system: OK')
+            parts = float(rnd.randrange(40, 300, 10)) if stage == 'Repair Complete' else None
+            c.execute("""INSERT INTO repair_log(repair_id, at, actor, kind, text, work_date, work_start, work_end, hours, parts_cost)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)""", (rid, when, 'repair', 'update', text, when[:10], start, end, hrs, parts))
+    if path_name == 'standard' and stop == 'Closed':
+        closed_std.append(rid)
+
+# ---------- Cores (CR) in every status, worked through ticket updates ----------
+CORE_STEPS = ['In Repair', 'Waiting on Parts', 'In Repair', 'Ready for Stock']
+CORE_NOTES = {
+    'In Repair': '1. Visual check: lens worn, strain relief cracked\n2. Element test: 2 weak elements near the center\n3. Replaced the lens\n\n**Next:** re-test elements',
+    'Waiting on Parts': 'Ordered a replacement strain relief from Demo Parts Co.\n- Expected Tuesday',
+    'Ready for Stock': 'Re-terminated the cable and fitted the new strain relief.\n- Element test: all pass\n- Image test on a demo system: OK',
+}
+core_plan = [('Needs Repair', 0), ('Needs Repair', 0), ('In Repair', 1), ('Waiting on Parts', 2), ('On Hold', 1),
+             ('In Repair', 3), ('Ready for Stock', 4), ('Converted to Stock', 4)]
+for i, (stage, steps) in enumerate(core_plan):
+    m, x, cat = rnd.choice([t for t in ALL_MODELS if t[2] == 'PRB'])
+    age = rnd.randint(12, 50); code = new_code('CR', age); orig = float(rnd.randrange(150, 1500, 25))
+    cid = c.execute('INSERT INTO core_items(inventory_code,manufacturer,product_raw,serial,location,supplier,original_cost,stage,notes,created_at,stage_started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        (code, m, f'{m} {x}', serial(), rnd.choice(['C1','C2','C3']), rnd.choice(SUPPLIERS), orig, 'Needs Repair', 'Demo core', ts(age), ts(age))).lastrowid
+    path = CORE_STEPS[:steps] if stage != 'On Hold' else ['On Hold']
+    prev = 'Needs Repair'
+    for k, st in enumerate(path):
+        when = ts(age - 2 - k * 3)
+        parts = float(rnd.randrange(40, 400, 10)) if st in ('In Repair', 'Ready for Stock') else 0.0
+        other = 25.0 if st == 'Waiting on Parts' else 0.0
+        body = CORE_NOTES.get(st, 'Not worth repairing right now; parked until a donor probe comes in.')
+        c.execute("""INSERT INTO core_transactions(core_id,performed_at,technician,description,labor_method,labor_hours,labor_rate,labor_cost,
+                     parts_cost,other_cost,work_date,work_time,actor,old_stage,new_stage,work_start,work_end,hours)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (cid, when, 'Repair Tech (demo)', body, 'none', 0, 0, 0, parts, other, when[:10], '',
+                   'repair', prev if st != prev else None, st if st != prev else None, *rnd.choice([('09:30', '11:00', 1.5), ('14:15', '15:00', 0.75), (None, None, None)])))
+        prev = st
+    c.execute('UPDATE core_items SET stage=?, stage_started_at=? WHERE id=?',
+              (prev if stage != 'Converted to Stock' else 'Ready for Stock', ts(age - 2 - (len(path) - 1) * 3) if path else ts(age), cid))
+    if prev == 'Ready for Stock':
+        c.execute('UPDATE core_items SET qc_result=?,qc_technician=?,qc_date=?,qc_notes=? WHERE id=?', ('Passed', 'Repair Tech (demo)', ts(2), 'Demo QC pass', cid))
+    if stage == 'Converted to Stock':
+        core = c.execute('SELECT * FROM core_items WHERE id=?', (cid,)).fetchone()
+        rc = c.execute('SELECT COALESCE(SUM(labor_cost+parts_cost+other_cost),0) FROM core_transactions WHERE core_id=?', (cid,)).fetchone()[0]
+        uid = c.execute('INSERT INTO units(manufacturer,product_raw,product_key,serial,cost,notes,location_raw,physical_location,status,condition,review,inventory_code,supplier,received_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (m, core['product_raw'], A.norm(core['product_raw']), core['serial'], round(orig + rc, 2), 'Converted from ' + code, 'A3', 'A3', 'Active', 'Refurbished', '', new_code('CC', 1), core['supplier'], d(1))).lastrowid
+        c.execute("""INSERT INTO core_transactions(core_id,performed_at,technician,description,labor_method,labor_hours,labor_rate,labor_cost,
+                     parts_cost,other_cost,work_date,actor,old_stage,new_stage) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (cid, ts(1), 'Admin (demo)', 'Converted to stock.', 'none', 0, 0, 0, 0, 0, d(1), 'sgascoine', 'Ready for Stock', 'Converted to Stock'))
+        c.execute('UPDATE core_items SET stage=?, stage_started_at=?, converted_unit_id=? WHERE id=?', ('Converted to Stock', ts(1), uid, cid))
+
+# ---------- Clients (accounts, contacts, activity) ----------
+CLIENT_INFO = {
+ 'Demo Valley Imaging': ('Imaging Center', 'Active', 'Net 30', 'sales'), 'Sample Regional Hospital': ('Hospital', 'Active', 'Net 45', 'sales'),
+ "Test Women's Clinic": ("OB/GYN / Women's Health", 'Active', 'Net 30', 'sgascoine'), 'Placeholder Cardiology Group': ('Cardiology', 'Active', 'Net 30', 'sgascoine'),
+ 'Example Vet Hospital': ('Veterinary', 'Active', 'Credit card on file', 'sales'), 'Fictional Ortho Partners': ('Clinic / Physician Office', 'On Hold', 'Prepaid', 'sgascoine'),
+ 'Mock Urgent Care': ('Clinic / Physician Office', 'Active', 'Due on receipt', 'sales'), 'Pretend Mobile Ultrasound': ('Mobile Ultrasound', 'Active', 'Net 15', 'sgascoine'),
+ 'Sample Biomed Services': ('Biomed / ISO', 'Prospect', '', 'sales'), 'Imaginary Equipment Brokers': ('Dealer / Broker', 'Prospect', '', 'sgascoine'),
+ 'Old Demo Clinic': ('Clinic / Physician Office', 'Inactive', 'Net 30', 'sales')}
+FIRST = ['Alex', 'Jordan', 'Taylor', 'Casey', 'Morgan', 'Riley', 'Jamie', 'Drew', 'Avery', 'Quinn', 'Reese', 'Skyler']
+LAST = ['Sample', 'Demo', 'Tester', 'Example', 'Mockley', 'Placeholder']
+TITLES = ['Biomed Manager', 'Lead Sonographer', 'Practice Manager', 'Purchasing', 'Accounts Payable', 'Clinical Director']
+client_ids = {}
+for i, (name, (typ, status, terms, owner)) in enumerate(CLIENT_INFO.items(), start=1):
+    age = rnd.randint(90, 700); street = rnd.randint(100, 9999); slug = name.lower().replace("'", '').replace(' ', '')[:18]
+    addr = f'{street} Demo Street\nSuite {rnd.randint(1, 400)}\nSampletown, CA 90000'
+    cid = c.execute("""INSERT INTO clients(name,account_type,status,phone,email,website,billing_address,shipping_address,payment_terms,tax_exempt,account_owner,notes,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (name, typ, status, f'(555) 01{i:02d}-{rnd.randint(1000, 9999)}', f'info@{slug}.example', f'www.{slug}.example',
+        addr, addr if rnd.random() < 0.6 else addr.replace('Suite', 'Receiving Dock'), terms, 1 if typ == 'Hospital' else 0, owner,
+        'DEMO client: fake contact details.', ts(age), ts(age))).lastrowid
+    c.execute('UPDATE clients SET client_code=? WHERE id=?', (f'CL-{cid:05d}', cid)); client_ids[name] = cid
+    if status != 'Prospect':     # fake Salesforce Account IDs (prospects are left unlinked to show the CSV import)
+        c.execute('UPDATE clients SET salesforce_id=? WHERE id=?', (f'001DM{cid:010d}AAA', cid))
+    c.execute('INSERT INTO client_activity(client_id,kind,subject,details,actor,created_at) VALUES (?,?,?,?,?,?)', (cid, 'System', 'Client created', f'Client record created for {name}', owner, ts(age)))
+    for k in range(rnd.randint(1, 3)):
+        nm = f'{rnd.choice(FIRST)} {rnd.choice(LAST)}'
+        c.execute('INSERT INTO client_contacts(client_id,name,title,phone,email,is_primary,created_at) VALUES (?,?,?,?,?,?,?)',
+                  (cid, nm, TITLES[(i + k) % len(TITLES)], f'(555) 02{i:02d}-{rnd.randint(1000, 9999)}', nm.lower().replace(' ', '.') + f'@{slug}.example', 1 if k == 0 else 0, ts(age)))
+    for k in range(rnd.randint(1, 4)):
+        kind, subj = rnd.choice([('Call', 'Called about probe availability'), ('Email', 'Sent quote for refurbished probe'), ('Quote', 'Quote Q-DEMO-%d sent' % rnd.randint(100, 999)),
+                                 ('Meeting', 'Site visit / equipment review'), ('Note', 'Prefers shipping via ground'), ('Follow-up', 'Follow up on PM contract')])
+        c.execute('INSERT INTO client_activity(client_id,kind,subject,details,actor,created_at) VALUES (?,?,?,?,?,?)',
+                  (cid, kind, subj, 'Demo activity entry.', owner, ts(rnd.randint(1, min(age, 80)), rnd.randint(0, 9))))
+# Link the demo repairs to their client records
+for name, cid in client_ids.items():
+    c.execute('UPDATE customer_repairs SET client_id=? WHERE customer=?', (cid, name))
+# Re-use one existing serial on a different manufacturer's product to show the S/N alert
+src = c.execute("SELECT serial FROM units WHERE inventory_code LIKE 'CC-%' AND serial<>'' ORDER BY id LIMIT 1").fetchone()[0]
+c.execute("UPDATE core_items SET serial=? WHERE id=(SELECT MIN(id) FROM core_items)", (src,))
+
+c.commit()
+counts = {t: c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in
+          ['units', 'movements', 'repair_orders', 'customer_repairs', 'repair_log', 'core_items', 'core_transactions', 'products', 'clients', 'client_contacts', 'client_activity', 'users']}
+c.close()
+print(f'Created {out}'); print(counts)
